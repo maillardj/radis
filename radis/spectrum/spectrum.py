@@ -2244,7 +2244,7 @@ class Spectrum(object):
             :meth:`~radis.spectrum.spectrum.Spectrum.get_slit` and plot with
             :meth:`~radis.spectrum.spectrum.Spectrum.plot_slit`. Default ``True``
         slit_dispersion: func of (lambda, in ``'nm'``), or ``None``
-            spectrometer reciprocal function : dÎ»/dx(Î»)   (in ``nm``)
+            spectrometer reciprocal function : dλ/dx(λ)   (in ``nm``)
             If not ``None``, then the slit_dispersion function is used to correct the
             slit function for the whole range. Can be important if slit function
             was measured far from the measured spectrum  (e.g: a slit function
@@ -2263,17 +2263,17 @@ class Spectrum(object):
 
             A Python implementation of the slit dispersion:
 
-            >>> def f(lbd):
-            >>>    return  w/(2*f)*(tan(Î¦)+sqrt((2*d/m/(w*1e-9)*cos(Î¦))^2-1))
+            >>> def f(w):
+            >>>    return  w/(2*f)*(tan(phi)+sqrt((2*d/m/(w*1e-9)*cos(phi))^2-1))
 
             Theoretical / References:
 
-            >>> dÎ»/dx ~ d/mf    # at first order
-            >>> dÎ»/dx = w/(2*f)*(tan(Î¦)+sqrt((2*d/m/(w)*cos(Î¦))^2-1))  # cf
+            >>> dλ/dx ~ d/mf    # at first order
+            >>> dλ/dx = λ/(2*f)*(tan(φ)+sqrt((2*d/m/(λ)*cos(φ))^2-1))  # cf
 
             with:
 
-            - Î¦: spectrometer angle (Â°)
+            - φ: spectrometer angle (Â°)
             - f: focal length (mm)
             - m: order of dispersion
             - d: grooves spacing (mm)   = 1/gr  with gr in (gr/mm)
