@@ -91,7 +91,7 @@ def test_broadening_vs_hapi(rtol=1e-2, verbose=True, plot=False, *args, **kwargs
             "HighTemperatureWarning": "ignore",
             "GaussianBroadeningWarning": "ignore",
         },
-    )  # 0.2)
+    )
     sf.load_databank(
         path=join(hapi_data_path, "CO.data"), format="hitran", parfuncfmt="hapi"
     )
@@ -286,11 +286,11 @@ def test_broadening_methods_different_wstep(verbose=True, plot=False, *args, **k
 
 
 @pytest.mark.fast
-def test_broadening_DLM(verbose=True, plot=False, *args, **kwargs):
+def test_broadening_LDM(verbose=True, plot=False, *args, **kwargs):
     """
     Test use of lineshape template for broadening calculation.
 
-    Ensures that results are the same with and without DLM.
+    Ensures that results are the same with and without LDM.
     """
 
     if plot:  # Make sure matplotlib is interactive so that test are not stuck in pytest
@@ -318,6 +318,7 @@ def test_broadening_DLM(verbose=True, plot=False, *args, **kwargs):
         pressure=p,
         truncation=truncation,
         neighbour_lines=neighbour_lines,
+        optimization=None,
         isotope="1",
         verbose=False,
         warnings={
@@ -326,47 +327,47 @@ def test_broadening_DLM(verbose=True, plot=False, *args, **kwargs):
             "HighTemperatureWarning": "ignore",
             "GaussianBroadeningWarning": "ignore",
         },
-    )  # 0.2)
+    )
     sf.load_databank("HITRAN-CO-TEST")
 
-    # Reference: calculate without DLM
-    assert sf.misc["chunksize"] is None
+    # Reference: calculate without LDM
+    assert sf.params["optimization"] is None
     s_ref = sf.eq_spectrum(Tgas=T)
     s_ref.name = "Reference ({0:.2f}s)".format(s_ref.conditions["calculation_time"])
 
-    # DLM:
-    sf.misc["chunksize"] = "DLM"
+    # LDM:
+    sf.params["optimization"] = "simple"
     sf.params.broadening_method = "convolve"
-    s_dlm = sf.eq_spectrum(Tgas=T)
-    s_dlm.name = "DLM ({0:.2f}s)".format(s_dlm.conditions["calculation_time"])
-    # DLM Voigt with Whiting approximation:
+    s_ldm = sf.eq_spectrum(Tgas=T)
+    s_ldm.name = "LDM ({0:.2f}s)".format(s_ldm.conditions["calculation_time"])
+    # LDM Voigt with Whiting approximation:
     sf.params.broadening_method = "voigt"
-    s_dlm_voigt = sf.eq_spectrum(Tgas=T)
-    s_dlm_voigt.name = "DLM Whiting ({0:.2f}s)".format(
-        s_dlm_voigt.conditions["calculation_time"]
+    s_ldm_voigt = sf.eq_spectrum(Tgas=T)
+    s_ldm_voigt.name = "LDM Whiting ({0:.2f}s)".format(
+        s_ldm_voigt.conditions["calculation_time"]
     )
 
     # Compare
-    res = get_residual(s_ref, s_dlm, "abscoeff")
-    res_voigt = get_residual(s_dlm, s_dlm_voigt, "abscoeff")
+    res = get_residual(s_ref, s_ldm, "abscoeff")
+    res_voigt = get_residual(s_ldm, s_ldm_voigt, "abscoeff")
 
     if verbose:
         print("Residual:", res)
 
     # plot the last one
     if plot:
-        plot_diff(s_ref, s_dlm, "abscoeff")
+        plot_diff(s_ref, s_ldm, "abscoeff")
         plt.legend()
-        plot_diff(s_dlm, s_dlm_voigt, "abscoeff")
+        plot_diff(s_ldm, s_ldm_voigt, "abscoeff")
 
     assert res < 1.2e-5
     assert res_voigt < 1e-5
 
 
 @pytest.mark.fast
-def test_broadening_DLM_FT(verbose=True, plot=False, *args, **kwargs):
+def test_broadening_LDM_FT(verbose=True, plot=False, *args, **kwargs):
     """
-    Test use of DLM with and without Fourier Transform
+    Test use of LDM with and without Fourier Transform
 
     Ensures that results are the same, and compare calculation times.
     """
@@ -398,50 +399,50 @@ def test_broadening_DLM_FT(verbose=True, plot=False, *args, **kwargs):
         neighbour_lines=neighbour_lines,
         isotope="1",
         verbose=verbose,
-        chunksize="DLM",
+        optimization="simple",
         warnings={
             "MissingSelfBroadeningWarning": "ignore",
             "NegativeEnergiesWarning": "ignore",
             "HighTemperatureWarning": "ignore",
             "GaussianBroadeningWarning": "ignore",
         },
-    )  # 0.2)
+    )
     sf.load_databank("HITRAN-CO-TEST")
 
-    # DLM, real space
+    # LDM, real space
     if verbose:
         print("\nConvolve version \n")
     sf._broadening_method = "convolve"
-    s_dlm = sf.eq_spectrum(Tgas=T)
-    s_dlm.name = "DLM ({0:.2f}s)".format(s_dlm.conditions["calculation_time"])
+    s_ldm = sf.eq_spectrum(Tgas=T)
+    s_ldm.name = "LDM ({0:.2f}s)".format(s_ldm.conditions["calculation_time"])
 
-    # DLM , with Fourier
+    # LDM , with Fourier
     if verbose:
         print("\nFFT version \n")
     sf.params.broadening_method = "fft"
-    s_dlm_fft = sf.eq_spectrum(Tgas=T)
-    s_dlm_fft.name = "DLM FFT ({0:.2f}s)".format(
-        s_dlm_fft.conditions["calculation_time"]
+    s_ldm_fft = sf.eq_spectrum(Tgas=T)
+    s_ldm_fft.name = "LDM FFT ({0:.2f}s)".format(
+        s_ldm_fft.conditions["calculation_time"]
     )
 
     # Compare
-    res = get_residual(s_dlm, s_dlm_fft, "abscoeff")
+    res = get_residual(s_ldm, s_ldm_fft, "abscoeff")
 
     if verbose:
         print("Residual:", res)
 
     # plot
     if plot:
-        plot_diff(s_dlm, s_dlm_fft, "abscoeff")
+        plot_diff(s_ldm, s_ldm_fft, "abscoeff")
         plt.legend()
 
     assert res < 5e-6
 
 
 @pytest.mark.fast
-def test_broadening_DLM_noneq(verbose=True, plot=False, *args, **kwargs):
+def test_broadening_LDM_noneq(verbose=True, plot=False, *args, **kwargs):
     """
-    Test Noneq version of DLM and makes sure it gives the same results as the eq
+    Test Noneq version of LDM and makes sure it gives the same results as the eq
     one when used with Tvib=Trot
 
     """
@@ -478,28 +479,28 @@ def test_broadening_DLM_noneq(verbose=True, plot=False, *args, **kwargs):
             "HighTemperatureWarning": "ignore",
             "GaussianBroadeningWarning": "ignore",
         },
-    )  # 0.2)
-    sf.load_databank("HITRAN-CO2-TEST")
+    )
+    sf.load_databank("HITRAN-CO2-TEST", load_columns="noneq")
 
-    # DLM:
-    sf.misc["chunksize"] = "DLM"
-    s_dlm_eq = sf.eq_spectrum(Tgas=3000)
-    s_dlm_eq.name = "DLM eq ({0:.2f}s)".format(s_dlm_eq.conditions["calculation_time"])
+    # LDM:
+    sf.params["optimization"] = "simple"
+    s_ldm_eq = sf.eq_spectrum(Tgas=3000)
+    s_ldm_eq.name = "LDM eq ({0:.2f}s)".format(s_ldm_eq.conditions["calculation_time"])
 
-    s_dlm_noneq = sf.non_eq_spectrum(Tvib=3000, Trot=3000)
-    s_dlm_noneq.name = "DLM noneq ({0:.2f}s)".format(
-        s_dlm_noneq.conditions["calculation_time"]
+    s_ldm_noneq = sf.non_eq_spectrum(Tvib=3000, Trot=3000)
+    s_ldm_noneq.name = "LDM noneq ({0:.2f}s)".format(
+        s_ldm_noneq.conditions["calculation_time"]
     )
 
     # Compare
-    res = get_residual(s_dlm_eq, s_dlm_noneq, "radiance_noslit")
+    res = get_residual(s_ldm_eq, s_ldm_noneq, "radiance_noslit")
 
     if verbose:
         print("Residual:", res)
 
     # plot
     if plot:
-        plot_diff(s_dlm_eq, s_dlm_noneq)
+        plot_diff(s_ldm_eq, s_ldm_noneq)
 
     assert res <= 1e-4
 
@@ -830,9 +831,8 @@ def test_noneq_continuum(plot=False, verbose=2, warnings=True, *args, **kwargs):
         }
     )
     sf.fetch_databank(
-        "hitran"
+        "hitran", load_columns="noneq"
     )  # uses HITRAN: not really valid at this temperature, but runs on all machines without install
-    #        sf.load_databank('HITEMP-CO2-DUNHAM')       # to take a real advantage of abscoeff continuum, should calculate with HITEMP
     sf._export_continuum = True  # activate it
 
     # Calculate one without pseudo-continuum
@@ -892,9 +892,9 @@ def _run_testcases(plot=False, verbose=True, *args, **kwargs):
         plot=plot, verbose=verbose, *args, **kwargs
     )
     test_broadening_methods_different_wstep(plot=plot, verbose=verbose, *args, **kwargs)
-    test_broadening_DLM(plot=plot, verbose=verbose, *args, **kwargs)
-    test_broadening_DLM_FT(plot=plot, verbose=3, *args, **kwargs)
-    test_broadening_DLM_noneq(plot=plot, verbose=verbose, *args, **kwargs)
+    test_broadening_LDM(plot=plot, verbose=verbose, *args, **kwargs)
+    test_broadening_LDM_FT(plot=plot, verbose=3, *args, **kwargs)
+    test_broadening_LDM_noneq(plot=plot, verbose=verbose, *args, **kwargs)
     test_truncations_and_neighbour_lines(*args, **kwargs)
 
     # Test warnings

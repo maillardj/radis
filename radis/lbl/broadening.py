@@ -39,9 +39,9 @@ convolve them, apply them on all calculated range)
 - :py:meth:`radis.lbl.broadening.BroadenFactory._add_voigt_broadening_HWHM`
 - :py:meth:`radis.lbl.broadening.BroadenFactory._voigt_broadening`
 - :py:meth:`radis.lbl.broadening.BroadenFactory._calc_lineshape`
-- :py:meth:`radis.lbl.broadening.BroadenFactory._calc_lineshape_DLM`
+- :py:meth:`radis.lbl.broadening.BroadenFactory._calc_lineshape_LDM`
 - :py:meth:`radis.lbl.broadening.BroadenFactory._apply_lineshape`
-- :py:meth:`radis.lbl.broadening.BroadenFactory._apply_lineshape_DLM`
+- :py:meth:`radis.lbl.broadening.BroadenFactory._apply_lineshape_LDM`
 - :py:meth:`radis.lbl.broadening.BroadenFactory._calc_broadening`
 - :py:meth:`radis.lbl.broadening.BroadenFactory._calc_broadening_noneq`
 - :py:meth:`radis.lbl.broadening.BroadenFactory._find_weak_lines`
@@ -60,6 +60,7 @@ Formula in docstrings generated with :py:func:`~pytexit.pytexit.py2tex` ::
 ----------
 
 """
+
 from warnings import warn
 
 import numpy as np
@@ -72,7 +73,14 @@ from scipy.signal import oaconvolve
 import radis
 from radis.db.references import doi
 from radis.lbl.base import BaseFactory
-from radis.misc.arrays import add_at, arange_len, numpy_add_at
+from radis.misc.arrays import (
+    add_at,
+    arange_len,
+    boolean_array_from_ranges,
+    non_zero_ranges_in_array,
+    numpy_add_at,
+    sparse_add_at,
+)
 from radis.misc.basics import is_float
 from radis.misc.debug import printdbg
 from radis.misc.plot import fix_style, set_style
@@ -279,13 +287,13 @@ def pressure_broadening_HWHM(
     References
     ----------
 
-    ..math::
+    .. math::
 
         \\gamma_{lb}={\\left(\\frac{T_{ref}}{T_{gas}}\\right)}^{n_{air}} \\gamma_{air} P \\left(1-x\\right)+{\\left(\\frac{T_{ref}}{T_{gas}}\\right)}^{n_{self}} \\gamma_{self} P x
 
     With :math:`n_{air}, n_{self}` the temperature dependance coefficients
     ``Tdpair, Tdpsel`` ; :math:`\\gamma_{air}, \\gamma_{self}` the air and resonant
-    broadening ``airbrd, selbrd``, :math:`x` the ``mole_fraction``.
+    HWHM broadening tabulated at :math:`T_{ref}`, :math:`x` the ``mole_fraction``.
 
     .. [1] `Rothman 1998 (HITRAN 1996) eq (A.14) <https://www.sciencedirect.com/science/article/pii/S0022407398000788>`_
 
@@ -966,10 +974,21 @@ class BroadenFactory(BaseFactory):
 
         molar_mass = self.get_molar_mass(df)
 
+        if not "selbrd" in list(df.keys()):
+            self.warn(
+                "Self-broadening coefficient selbrd not given in database: used airbrd instead",
+                "MissingSelfBroadeningWarning",
+                level=2,  # only appear if verbose>=2
+            )
+
+            selbrd = df.airbrd
+        else:
+            selbrd = df.selbrd
+
         # Calculate broadening FWHM
         wv, wl, wg = voigt_broadening_HWHM(
             df.airbrd,
-            df.selbrd,
+            selbrd,
             df.Tdpair,
             Tdpsel,
             df.wav,
@@ -1028,6 +1047,7 @@ class BroadenFactory(BaseFactory):
             self.warn(
                 "Self-broadening reference width `selbrd` not given in database: used air broadening reference width `airbrd` instead",
                 "MissingSelfBroadeningWarning",
+                level=2,  # only appear if verbose>=2
             )
             selbrd = df.airbrd
         else:
@@ -1376,10 +1396,10 @@ class BroadenFactory(BaseFactory):
 
         return line_profile
 
-    def _calc_lineshape_DLM(self, df):
+    def _calc_lineshape_LDM(self, df):
         """Generate the lineshape database using the steps defined by the
-        parameters :py:attr:`~radis.lbl.loader.Parameters.dlm_log_pL` and
-        :py:attr:`~radis.lbl.loader.Parameters.dlm_log_pG`.
+        parameters :py:attr:`~radis.lbl.loader.Parameters.dxL` and
+        :py:attr:`~radis.lbl.loader.Parameters.dxG`.
 
         Parameters
         ----------
@@ -1388,26 +1408,26 @@ class BroadenFactory(BaseFactory):
 
         Returns
         -------
-        line_profile_DLM: dict
+        line_profile_LDM: dict
             dictionary of Voigt profile template.
             If ``self.params.broadening_method == 'fft'``, templates are calculated
             in Fourier space.
         wL, wG: array
-            Lorentzian and Gaussian FWHM in DLM
+            Lorentzian and Gaussian FWHM in LDM
         wL_dat, wG_dat: array
             Lorentzian and Gaussian FWHM of data lines.
 
         Reference
         ---------
-        DLM implemented based on a code snippet from D.v.d.Bekerom.
+        LDM implemented based on a code snippet from D.v.d.Bekerom.
         See: https://github.com/radis/radis/issues/37
 
         See Also
         --------
-        :py:meth:`~radis.lbl.broadening.BroadenFactory._apply_lineshape_DLM`
+        :py:meth:`~radis.lbl.broadening.BroadenFactory._apply_lineshape_LDM`
 
         """
-        self.profiler.start("precompute_DLM_lineshapes", 3)
+        self.profiler.start("precompute_LDM_lineshapes", 3)
 
         # Prepare steps for Lineshape database
         # ------------------------------------
@@ -1420,21 +1440,21 @@ class BroadenFactory(BaseFactory):
             N = np.ceil((np.log(w_max) - np.log(w_min)) / log_p) + 1
             return w_min * np.exp(log_p * np.arange(N))
 
-        log_pL = self.params.dlm_log_pL  # DLM user params
-        log_pG = self.params.dlm_log_pG  # DLM user params
+        log_pL = self.params.dxL  # LDM user params
+        log_pG = self.params.dxG  # LDM user params
 
         wL_dat = df.hwhm_lorentz.values * 2  # FWHM
         wG_dat = df.hwhm_gauss.values * 2  # FWHM
 
         wL = _init_w_axis(wL_dat, log_pL)  # FWHM
-        self.wL = len(wL)
+        self.NwL = len(wL)
         wG = _init_w_axis(wG_dat, log_pG)  # FWHM
-        self.wG = len(wG)
+        self.NwG = len(wG)
 
         # Calculate the Lineshape
         # -----------------------
 
-        line_profile_DLM = {}
+        line_profile_LDM = {}
         broadening_method = self.params.broadening_method
         if broadening_method == "voigt":
             jit = False  # not enough lines to make the just-in-time FORTRAN compilation useful
@@ -1443,13 +1463,13 @@ class BroadenFactory(BaseFactory):
             # Non vectorized loop. Probably slightly slower, but this is not the bottleneck anyway.
             # see commit 6474cb7e on 15/08/2019 for a vectorized version
             for l in range(len(wG)):
-                line_profile_DLM[l] = {}
+                line_profile_LDM[l] = {}
                 for m in range(len(wL)):
                     wV_ij = olivero_1977(wG[l], wL[m])  # FWHM
                     lineshape = voigt_lineshape(
                         wbroad_centered, wL[m] / 2, wV_ij / 2, jit=jit
                     )  # FWHM > HWHM
-                    line_profile_DLM[l][m] = lineshape
+                    line_profile_LDM[l][m] = lineshape
 
         elif broadening_method == "convolve":
             wbroad_centered = self.wbroad_centered
@@ -1464,11 +1484,11 @@ class BroadenFactory(BaseFactory):
 
             # Get all combinations of Voigt lineshapes
             for l in range(len(wG)):
-                line_profile_DLM[l] = {}
+                line_profile_LDM[l] = {}
                 for m in range(len(wL)):
                     lineshape = np.convolve(IL[m], IG[l], mode="same")
                     lineshape /= np.trapz(lineshape, x=wbroad_centered)
-                    line_profile_DLM[l][m] = lineshape
+                    line_profile_LDM[l][m] = lineshape
 
         elif broadening_method == "fft":
             # Unlike real space methods ('convolve', 'voigt'), here we calculate
@@ -1483,10 +1503,10 @@ class BroadenFactory(BaseFactory):
 
             # Get all combinations of Voigt lineshapes (in Fourier space)
             for l in range(len(wG)):
-                line_profile_DLM[l] = {}
+                line_profile_LDM[l] = {}
                 for m in range(len(wL)):
 
-                    line_profile_DLM[l][m] = voigt_FT(
+                    line_profile_LDM[l][m] = voigt_FT(
                         w_lineshape_ft, wG[l] / 2, wL[m] / 2
                     )
 
@@ -1496,28 +1516,29 @@ class BroadenFactory(BaseFactory):
                         voigt_FT(n / (2 * wstep), wG[l] / 2, wL[m] / 2)
                         >= self.params.folding_thresh
                     ):
-                        line_profile_DLM[l][m] += voigt_FT(
+                        line_profile_LDM[l][m] += voigt_FT(
                             n / (2 * wstep) + w_fold[n & 1], wG[l] / 2, wL[m] / 2
                         )
                         n += 1
 
-                    line_profile_DLM[l][m] /= line_profile_DLM[l][m][0]
+                    line_profile_LDM[l][m] /= line_profile_LDM[l][m][0]
 
         else:
             raise NotImplementedError(
-                "Broadening method with DLM: {0}".format(broadening_method)
+                "Broadening method with LDM: {0}".format(broadening_method)
             )
 
         self.profiler.stop(
-            "precompute_DLM_lineshapes",
-            f"Precomputed DLM lineshapes ({len(wL) * len(wG)})",
+            "precompute_LDM_lineshapes",
+            f"Precomputed LDM lineshapes ({len(wL) * len(wG)})",
         )
 
-        return line_profile_DLM, wL, wG, wL_dat, wG_dat
+        return line_profile_LDM, wL, wG, wL_dat, wG_dat
 
     def plot_broadening(self, i=0, pressure_atm=None, mole_fraction=None, Tgas=None):
-        """just for testing. Recalculate and plot broadening for line of index
-        i.
+        """Recalculate and plot broadening for line of index ``i``.
+
+        Used mainly for testing.
 
         Parameters
         ----------
@@ -1533,6 +1554,8 @@ class BroadenFactory(BaseFactory):
         Examples
         --------
         ::
+
+            from radis import SpectrumFactory
             sf=SpectrumFactory(...)
             sf.eq_spectrum(...)
             sf.plot_broadening(i=500)   # plot line number 500
@@ -1720,10 +1743,10 @@ class BroadenFactory(BaseFactory):
         index = pos.astype(np.int32)
         return index, index + 1, pos - index
 
-    def _apply_lineshape_DLM(
+    def _apply_lineshape_LDM(
         self,
         broadened_param,
-        line_profile_DLM,
+        line_profile_LDM,
         shifted_wavenum,
         wL,
         wG,
@@ -1739,10 +1762,10 @@ class BroadenFactory(BaseFactory):
         broadened_param: pandas Series (or numpy array)   [size N = number of lines]
             Series to apply lineshape to. Typically linestrength `S` for absorption,
             or `nu * Aul / 4pi * DeltaE` for emission
-        line_profile_DLM:  dict
+        line_profile_LDM:  dict
             dict of line profiles ::
 
-                lineshape = line_profile_DLM[gaussian_index][lorentzian_index]
+                lineshape = line_profile_LDM[gaussian_index][lorentzian_index]
 
             If ``self.params.broadening_method == 'fft'``, templates are given
             in Fourier space.
@@ -1750,13 +1773,13 @@ class BroadenFactory(BaseFactory):
         shifted_wavenum: (cm-1)     pandas Series (size N = number of lines)
             center wavelength (used to project broaded lineshapes )
         wL: array       (size DL)
-            array of all Lorentzian widths in DLM
+            array of all Lorentzian widths in LDM
         wG: array       (size DG)
-            array of all Gaussian widths in DLM
+            array of all Gaussian widths in LDM
         wL_dat: array    (size N)
-            FWHM of all lines. Used to lookup the DLM
+            FWHM of all lines. Used to lookup the LDM
         wG_dat: array    (size N)
-            FWHM of all lines. Used to lookup the DLM
+            FWHM of all lines. Used to lookup the LDM
         optimization :
             if ``"min-RMS"`` weights optimized by analytical minimization of the RMS-error.
             Otherwise, weights equal to their relative position in the grid.
@@ -1774,15 +1797,15 @@ class BroadenFactory(BaseFactory):
 
         Reference
         ---------
-        DLM implemented based on a code snippet from D.v.d.Bekerom.
+        LDM implemented based on a code snippet from D.v.d.Bekerom.
         See: https://github.com/radis/radis/issues/37
 
         See Also
         --------
-        :py:meth:`~radis.lbl.broadening.BroadenFactory._calc_lineshape_DLM`
+        :py:meth:`~radis.lbl.broadening.BroadenFactory._calc_lineshape_LDM`
         """
 
-        self.profiler.start("DLM_Initialized_vectors", 3)
+        self.profiler.start("LDM_Initialized_vectors", 3)
         # Get spectrum range
         wavenumber = self.wavenumber  # get vector of wavenumbers (shape W)
         wavenumber_calc = self.wavenumber_calc
@@ -1794,22 +1817,22 @@ class BroadenFactory(BaseFactory):
         # ...    (either because deactivated, or because not installed)
         if self.use_cython and add_at != numpy_add_at:
             _add_at = add_at
-            self.params.add_at_used = "cython"
+            self.misc.add_at_used = "cython"
         else:
             _add_at = numpy_add_at
-            self.params.add_at_used = "numpy"
+            self.misc.add_at_used = "numpy"
         # Vectorize the chunk of lines
         S = broadened_param
 
         # ---------------------------
         # Apply line profile
 
-        self.profiler.stop("DLM_Initialized_vectors", "Initialized vectors")
-        self.profiler.start("DLM_closest_matching_line", 3)
+        self.profiler.stop("LDM_Initialized_vectors", "Initialized vectors")
+        self.profiler.start("LDM_closest_matching_line", 3)
         # ... First get closest matching spectral point  (on the left, and on the right)
         #         ... @dev: np.interp about 30% - 50% faster than np.searchsorted
 
-        # DLM : Next calculate how the line is distributed over the 2x2x2 bins.
+        # LDM : Next calculate how the line is distributed over the 2x2x2 bins.
         ki0, ki1, tvi = self._get_indices(shifted_wavenum, wavenumber_calc)
         li0, li1, tGi = self._get_indices(np.log(wG_dat), np.log(wG))
         mi0, mi1, tLi = self._get_indices(np.log(wL_dat), np.log(wL))
@@ -1819,8 +1842,8 @@ class BroadenFactory(BaseFactory):
 
             dv = self.params.wstep
             dxvGi = dv / wG_dat
-            dxG = self.params.dlm_log_pG  # DLM user params
-            dxL = self.params.dlm_log_pL  # DLM user params
+            dxG = self.params.dxG  # LDM user params
+            dxL = self.params.dxL  # LDM user params
 
             C1_GG = ((6 * np.pi - 16) / (15 * np.pi - 32)) ** (1 / 1.50)
             C1_LG = ((6 * np.pi - 16) / 3 * (np.log(2) / (2 * np.pi)) ** 0.5) ** (
@@ -1861,7 +1884,7 @@ class BroadenFactory(BaseFactory):
             aGi = tGi
             aLi = tLi
 
-        # ... fractions on DLM grid
+        # ... fractions on LDM grid
         awV00 = (1 - aGi) * (1 - aLi)
         awV01 = (1 - aGi) * aLi
         awV10 = aGi * (1 - aLi)
@@ -1871,17 +1894,26 @@ class BroadenFactory(BaseFactory):
         Iv1 = S * avi
 
         self.profiler.stop(
-            "DLM_closest_matching_line", "Get closest matching line & fraction"
+            "LDM_closest_matching_line", "Get closest matching line & fraction"
         )
-        self.profiler.start("DLM_Distribute_lines", 3)
+        self.profiler.start("LDM_Distribute_lines", 3)
         # ... Initialize array on which to distribute the lineshapes
         if broadening_method in ["voigt", "convolve"]:
-            DLM = np.zeros((len(wavenumber_calc) + 2, len(wG), len(wL)))
-            # +2 to allocate one empty grid point on each side : case where a line is on the boundary
-            ki0 += 1
-            ki1 += 1
+            if self.params.sparse_ldm == True:
+                # LDM is constructed in a sparse-way later
+                pass
+            else:
+                LDM = np.zeros((len(wavenumber_calc) + 2, len(wG), len(wL)))
+                # +2 to allocate one empty grid point on each side : case where a line is on the boundary
+                ki0 += 1
+                ki1 += 1
         elif broadening_method == "fft":
-            DLM = np.zeros(
+            if self.params.sparse_ldm == True:
+                if self.verbose >= 2:
+                    print(
+                        "SPARSE optimisation not implemented with 'fft' mode. Use 'voigt' for analytical voigt, or radis.config['SPARSE_WAVERANGE'] = False"
+                    )
+            LDM = np.zeros(
                 (
                     2 * len(wavenumber_calc),  # TO-DO: Add  + self.misc.zero_padding
                     len(wG),
@@ -1892,26 +1924,153 @@ class BroadenFactory(BaseFactory):
             raise NotImplementedError(broadening_method)
 
         # Distribute all line intensities on the 2x2x2 bins.
-        _add_at(DLM, ki0, li0, mi0, Iv0 * awV00)
-        _add_at(DLM, ki0, li0, mi1, Iv0 * awV01)
-        _add_at(DLM, ki0, li1, mi0, Iv0 * awV10)
-        _add_at(DLM, ki0, li1, mi1, Iv0 * awV11)
-        _add_at(DLM, ki1, li0, mi0, Iv1 * awV00)
-        _add_at(DLM, ki1, li0, mi1, Iv1 * awV01)
-        _add_at(DLM, ki1, li1, mi0, Iv1 * awV10)
-        _add_at(DLM, ki1, li1, mi1, Iv1 * awV11)
+        if (
+            broadening_method in ["voigt", "convolve"]
+            and self.params.sparse_ldm == True
+        ):
 
-        if broadening_method in ["voigt", "convolve"]:
-            DLM = DLM[1:-1, :, :]
-            # 1:-1 to remove the empty grid point on each side
+            import pandas as pd
+
+            df = pd.DataFrame(
+                {
+                    "ki0": ki0,
+                    "li0": li0,
+                    "li1": li1,
+                    "mi0": mi0,
+                    "mi1": mi1,
+                    "Iv0": Iv0,
+                    "Iv1": Iv1,
+                    "awV00": awV00,
+                    "awV01": awV01,
+                    "awV10": awV10,
+                    "awV11": awV11,
+                },
+                copy=False,
+            )
+
+            def get_non_zero_wranges(groupby_parameters, max_range, intensity_weight):
+                """Get coordinates of non-zero wave ranges for all lines
+                that share the same ``groupby_parameters``
+
+                Parameters
+                ----------
+                groupby_parameters: str
+                max_range: int
+
+                Examples
+                --------
+                ::
+                    LDM_ranges_00 = get_non_zero_wranges(groupby_parameters=["li0", "mi0"], max_range=len(wavenumber_calc))
+                """
+                # EP 31/10: the for loop over df.groupby is the current bottleneck
+                # (not even the sparse_add_at function !)
+                dgb = df.groupby(groupby_parameters, sort=False)
+                LDM_ranges = {}
+                LDM_reduced = {}
+                for groupby_param, group in dgb:
+                    truncation_pts = int(self.params.truncation // self.params.wstep)
+                    # note: truncation can be unique for each point of the LDM basis
+                    # (allow to have line-dependant truncatino, at least as all
+                    # lines with same truncation are grouped together in the LDM basis)
+
+                    ki0 = group.ki0.values
+                    Iv0 = group.Iv0.values
+                    Iv1 = group.Iv1.values
+                    weight = group[intensity_weight].values
+
+                    # build the list of non-empty ranges for all lines with this lineshape :
+                    ranges, I = sparse_add_at(
+                        ki0, Iv0, Iv1, weight, max_range, truncation_pts
+                    )
+
+                    LDM_ranges[groupby_param] = ranges
+
+                    # generate reduced array:
+                    b = boolean_array_from_ranges(ranges, len(I))
+                    I_reduced = I[b]
+                    LDM_reduced[groupby_param] = I_reduced
+
+                return LDM_ranges, LDM_reduced
+
+            w = wavenumber_calc
+
+            LDM_ranges_00, LDM_reduced_00 = get_non_zero_wranges(
+                groupby_parameters=["li0", "mi0"],
+                max_range=len(w),
+                intensity_weight="awV00",
+            )
+            LDM_ranges_01, LDM_reduced_01 = get_non_zero_wranges(
+                groupby_parameters=["li0", "mi1"],
+                max_range=len(w),
+                intensity_weight="awV01",
+            )
+            LDM_ranges_10, LDM_reduced_10 = get_non_zero_wranges(
+                groupby_parameters=["li1", "mi0"],
+                max_range=len(w),
+                intensity_weight="awV10",
+            )
+            LDM_ranges_11, LDM_reduced_11 = get_non_zero_wranges(
+                groupby_parameters=["li1", "mi1"],
+                max_range=len(w),
+                intensity_weight="awV11",
+            )
+
+            # Combine all LDM ranges:
+            all_keys = (
+                set(LDM_ranges_00.keys())
+                | set(LDM_ranges_01.keys())
+                | set(LDM_ranges_10.keys())
+                | set(LDM_ranges_11.keys())
+            )
+            LDM_ranges = {}
+            LDM_reduced = {}
+            #  (note : could be combined faster by combining the ranges directly, rather than geenrating the boolean arrays?)
+            for param in all_keys:
+                b = np.zeros(len(w), dtype=bool)
+                I = np.zeros(len(w))
+                if param in LDM_ranges_00:
+                    bi = boolean_array_from_ranges(LDM_ranges_00[param], len(w))
+                    I[bi] += LDM_reduced_00[param]
+                    b += bi
+                if param in LDM_ranges_01:
+                    bi = boolean_array_from_ranges(LDM_ranges_01[param], len(w))
+                    I[bi] += LDM_reduced_01[param]
+                    b += bi
+                if param in LDM_ranges_10:
+                    bi = boolean_array_from_ranges(LDM_ranges_10[param], len(w))
+                    I[bi] += LDM_reduced_10[param]
+                    b += bi
+                if param in LDM_ranges_11:
+                    bi = boolean_array_from_ranges(LDM_ranges_11[param], len(w))
+                    I[bi] += LDM_reduced_11[param]
+                    b += bi
+
+                # Sparse storage (coordinates & non-zeros ranges) :
+                if b.any():
+                    LDM_ranges[param] = non_zero_ranges_in_array(b)
+                    LDM_reduced[param] = I[b]
+
+        else:
+            _add_at(LDM, ki0, li0, mi0, Iv0 * awV00)
+            _add_at(LDM, ki0, li0, mi1, Iv0 * awV01)
+            _add_at(LDM, ki0, li1, mi0, Iv0 * awV10)
+            _add_at(LDM, ki0, li1, mi1, Iv0 * awV11)
+            _add_at(LDM, ki1, li0, mi0, Iv1 * awV00)
+            _add_at(LDM, ki1, li0, mi1, Iv1 * awV01)
+            _add_at(LDM, ki1, li1, mi0, Iv1 * awV10)
+            _add_at(LDM, ki1, li1, mi1, Iv1 * awV11)
+
+            if broadening_method in ["voigt", "convolve"]:
+                LDM = LDM[1:-1, :, :]
+                # 1:-1 to remove the empty grid point on each side
 
         # All lines within each bins are convolved with the same lineshape.
         # Let's do it:
 
-        self.profiler.stop("DLM_Distribute_lines", "Distribute lines over DLM")
-        self.profiler.start("DLM_convolve", 3)
+        self.profiler.stop("LDM_Distribute_lines", "Distribute lines over LDM")
+        self.profiler.start("LDM_convolve", 3)
 
-        # For each value from the DLM, retrieve the lineshape and convolve all
+        # For each value from the LDM, retrieve the lineshape and convolve all
         # corresponding lines with it before summing.
         if broadening_method in ["voigt", "convolve"]:
 
@@ -1920,24 +2079,34 @@ class BroadenFactory(BaseFactory):
 
             for l in range(len(wG)):
                 for m in range(len(wL)):
-                    lineshape = line_profile_DLM[l][m]
-                    sumoflines_calc += oaconvolve(DLM[:, l, m], lineshape, "same")
+                    lineshape = line_profile_LDM[l][m]
+
+                    if self.params.sparse_ldm == True:
+                        if (l, m) in LDM_ranges.keys():
+                            mask = boolean_array_from_ranges(
+                                LDM_ranges[(l, m)], len(sumoflines_calc)
+                            )
+                            sumoflines_calc[mask] += oaconvolve(
+                                LDM_reduced[(l, m)], lineshape, "same"
+                            )
+                    else:
+                        sumoflines_calc += oaconvolve(LDM[:, l, m], lineshape, "same")
 
         elif broadening_method == "fft":
             # ... Initialize array in FT space
-            Idlm_FT = 1j * np.zeros(len(line_profile_DLM[0][0]))
+            Ildm_FT = 1j * np.zeros(len(line_profile_LDM[0][0]))
             for l in range(len(wG)):
                 for m in range(len(wL)):
-                    lineshape_FT = line_profile_DLM[l][m]
-                    Idlm_FT += np.fft.rfft(DLM[:, l, m]) * lineshape_FT
+                    lineshape_FT = line_profile_LDM[l][m]
+                    Ildm_FT += np.fft.rfft(LDM[:, l, m]) * lineshape_FT
             # Back in real space:
-            sumoflines_calc = np.fft.irfft(Idlm_FT)[: len(wavenumber_calc)]
+            sumoflines_calc = np.fft.irfft(Ildm_FT)[: len(wavenumber_calc)]
             sumoflines_calc /= self.params.wstep
 
         else:
             raise NotImplementedError(broadening_method)
 
-        self.profiler.stop("DLM_convolve", "Convolve and sum on spectral range")
+        self.profiler.stop("LDM_convolve", "Convolve and sum on spectral range")
         # Get valid range (discard wings)
         sumoflines = sumoflines_calc[self.woutrange[0] : self.woutrange[1]]
 
@@ -1978,9 +2147,9 @@ class BroadenFactory(BaseFactory):
         try:
             if optimization in ("simple", "min-RMS"):
                 self.reftracker.add(doi["DIT-2020"], "algorithm")
-                # Use DLM
+                # Use LDM
 
-                line_profile_DLM, wL, wG, wL_dat, wG_dat = self._calc_lineshape_DLM(df)
+                line_profile_LDM, wL, wG, wL_dat, wG_dat = self._calc_lineshape_LDM(df)
                 # printing estimated time
                 if self.verbose >= 2:
                     estimated_time = self.predict_time()
@@ -1989,9 +2158,9 @@ class BroadenFactory(BaseFactory):
                             estimated_time
                         )
                     )
-                (wavenumber, abscoeff) = self._apply_lineshape_DLM(
+                (wavenumber, abscoeff) = self._apply_lineshape_LDM(
                     df.S.values,
-                    line_profile_DLM,
+                    line_profile_LDM,
                     df.shiftwav.values,
                     wL,
                     wG,
@@ -2082,14 +2251,14 @@ class BroadenFactory(BaseFactory):
         try:
             if optimization in ("simple", "min-RMS"):
                 self.reftracker.add(doi["DIT-2020"], "algorithm")
-                # Use DLM
+                # Use LDM
 
                 if self.misc.zero_padding < 0 or self.misc.zero_padding > len(
                     self.wavenumber_calc
                 ):
                     self.misc.zero_padding = len(self.wavenumber_calc)
 
-                line_profile_DLM, wL, wG, wL_dat, wG_dat = self._calc_lineshape_DLM(df)
+                line_profile_LDM, wL, wG, wL_dat, wG_dat = self._calc_lineshape_LDM(df)
                 # printing estimated time
                 if self.verbose >= 2:
                     estimated_time = self.predict_time()
@@ -2098,9 +2267,9 @@ class BroadenFactory(BaseFactory):
                             estimated_time
                         )
                     )
-                (wavenumber, abscoeff) = self._apply_lineshape_DLM(
+                (wavenumber, abscoeff) = self._apply_lineshape_LDM(
                     df.S.values,
-                    line_profile_DLM,
+                    line_profile_LDM,
                     df.shiftwav.values,
                     wL,
                     wG,
@@ -2108,9 +2277,9 @@ class BroadenFactory(BaseFactory):
                     wG_dat,
                     optimization,
                 )
-                (_, emisscoeff) = self._apply_lineshape_DLM(
+                (_, emisscoeff) = self._apply_lineshape_LDM(
                     df.Ei.values,
-                    line_profile_DLM,
+                    line_profile_LDM,
                     df.shiftwav.values,
                     wL,
                     wG,
@@ -2120,21 +2289,21 @@ class BroadenFactory(BaseFactory):
                 )
                 # Note @dev: typical results is:
                 # >>> abscoeff:
-                # ... Precomputed DLM lineshapes in 0.0s
+                # ... Precomputed LDM lineshapes in 0.0s
                 # ... Initialized vectors in 0.0s
                 # ... Get closest matching line & fraction in 0.3s
-                # ... Distribute lines over DLM 2.1s
+                # ... Distribute lines over LDM 2.1s
                 # ... Convolve and sum on spectral range 0.4s
                 # >>> emisscoeff
                 # ... Initialized vectors in 0.0s
                 # ... Get closest matching line & fraction in 0.2s
-                # ... Distribute lines over DLM 2.1s
+                # ... Distribute lines over LDM 2.1s
                 # ... Convolve and sum on spectral range 0.3s
                 # @EP: #performance.
-                # unlike in the non DLM case, the nonequilibruum case here is ~2x
+                # unlike in the non LDM case, the nonequilibruum case here is ~2x
                 # the equilibrium case: only the closest matching line is common to the
                 # absorption & emission steps. The bottleneck is the distribution
-                # of the line over the DLM, which has to be done for both abscoeff & emisscoeff.
+                # of the line over the LDM, which has to be done for both abscoeff & emisscoeff.
 
             elif optimization is None:
                 # printing estimated time
@@ -2436,7 +2605,7 @@ class BroadenFactory(BaseFactory):
             wstep = self.params.wstep
             if self.params.optimization is not None:
                 raise ValueError(
-                    "pseudo-continuum not compatible with DLM. "
+                    "pseudo-continuum not compatible with LDM. "
                     + "Choose either optimization=None either pseudo_continuum_threshold=0"
                 )
 
@@ -2701,7 +2870,7 @@ def project_lines_on_grid(df, wavenumber, wstep):
 
     # TODO: @dev #performance
     # ... try with k_rough_spectrum.add.at()  ?
-    # ... but it probably wont ever be comparable with DLM.
+    # ... but it probably wont ever be comparable with LDM.
 
     k_rough_spectrum = rough_sum_on_grid()
 
@@ -2870,3 +3039,5 @@ if __name__ == "__main__":
     from radis.test.lbl.test_broadening import _run_testcases
 
     print("Testing broadening.py:", _run_testcases(verbose=True, plot=True))
+
+# %%

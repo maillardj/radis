@@ -519,7 +519,18 @@ class Spectrum(object):
     # %% Constructors
 
     @classmethod
-    def from_array(self, w, I, quantity, wunit, unit, waveunit=None, *args, **kwargs):
+    def from_array(
+        self,
+        w,
+        I,
+        quantity,
+        wunit=None,
+        Iunit=None,
+        waveunit=None,
+        unit=None,
+        *args,
+        **kwargs,
+    ):
         """Construct Spectrum from 2 arrays.
 
         Parameters
@@ -531,8 +542,10 @@ class Spectrum(object):
         wunit: ``'nm'``, ``'cm-1'``, ``'nm_vac'``
             unit of waverange:         wavelength in air (``'nm'``), wavenumber
             (``'cm-1'``), or wavelength in vacuum (``'nm_vac'``).
-        unit: str
-            spectral quantity unit (arbitrary). Ex: 'mW/cm2/sr/nm' for radiance_noslit
+            If ``None``, then ``w`` must be a dimensionned array.
+        Iunit: str
+            spectral quantity unit (arbitrary). Ex: ``'mW/cm2/sr/nm'`` for radiance_noslit
+            If ``None``, then ``I`` must be a dimensionned array.
         *args, **kwargs
             see :class:`~radis.spectrum.spectrum.Spectrum` doc
 
@@ -561,18 +574,23 @@ class Spectrum(object):
 
         Returns
         -------
-
-        s: Spectrum
+        Spectrum
             creates a :class:`~radis.spectrum.spectrum.Spectrum` object
 
         Examples
         --------
-
         Create a spectrum::
 
             from radis import Spectrum
             s = Spectrum.from_array(w, I, 'radiance_noslit',
                                    wunit='nm', unit='mW/cm2/sr/nm')
+
+        Dimensionned arrays can also be used directly ::
+
+            import astropy.units as u
+            w = np.linspace(200, 300) * u.nm
+            I = np.random.rand(len(w)) * u.mW/u.cm**2/u.sr/u.nm
+            s = Spectrum.from_array(w, I, 'radiance_noslit')
 
         To create a spectrum with absorption and emission components
         (e.g: ``radiance_noslit`` and ``transmittance_noslit``, or ``emisscoeff``
@@ -604,9 +622,56 @@ class Spectrum(object):
                 DeprecationWarning,
             )
             wunit = waveunit
+        if unit is not None:
+            warn(
+                "`unit=` parameter in from_array is now named `Iunit=`",
+                DeprecationWarning,
+            )
+            Iunit = unit
+
+        # Check if dimensionned arrays
+        try:
+            I.unit
+        except AttributeError:
+            # dimensionless
+            if Iunit is None:
+                raise ValueError(
+                    "I must be a dimensionned array, or ``Iunit=`` must be given."
+                )
+        else:
+            if Iunit is not None:
+                raise ValueError(
+                    f"I is a dimensionned array (in {Iunit.unit.to_string()}), therefore ``Iunit`` cannot be given too (got {Iunit}). Set ``Iunit=None``"
+                )
+            Iunit = I.unit.to_string()
+            I = I.value
+        try:
+            w.unit
+        except AttributeError:
+            # dimensionless
+            if wunit is None:
+                raise ValueError(
+                    "``w`` must be a dimensionned array, or ``wunit=`` must be given."
+                )
+        else:
+            if wunit is not None:
+                raise ValueError(
+                    f"``w`` is a dimensionned array (in {wunit.unit.to_string()}), therefore ``wunit`` cannot be given too (got {wunit}). Set ``wunit=None``"
+                )
+            wunit = w.unit.to_string()
+            if wunit not in WAVELEN_UNITS + WAVENUM_UNITS:
+                # Convert to something we know, for instance 'nm' :
+                if w.unit.is_equivalent("nm"):
+                    w = w.to("nm")
+                    wunit = "nm"
+                elif w.unit.is_equivalent("1 / cm"):
+                    w = w.to("1 / cm")
+                    wunit = "cm-1"
+                # else, an error will be raised anyway on Spectrum creation.
+            w = w.value
 
         quantities = {quantity: (w, I)}
-        units = {quantity: unit}
+        units = {quantity: Iunit}
 
         # Update Spectrum conditions
         conditions = kwargs.pop("conditions", {})
@@ -751,6 +816,104 @@ class Spectrum(object):
         s.file = file
         return s
 
+    @classmethod
+    def from_hdf5(
+        self, file, wmin=None, wmax=None, wunit=None, columns=None, engine="pytables"
+    ):
+        """Generates a Spectrum from an HDF5 file. Uses :py:func:`~radis.io.spec_hdf.hdf2spec`
+
+        Other Parameters
+        ----------------
+        wmin, wmax: float
+            range of wmin, wmax to load , using ``wunit`` (if None, load everything)
+        columns: list of str
+            spectral arrays to load (if None, load everything)
+
+        Examples
+        --------
+        ::
+
+            Spectrum.from_hdf5("rad_hdf.h5", wmin=2100, wmax=2200, columns=['abscoeff', 'emisscoeff'])
+
+        See Also
+        --------
+        :py:func:`~radis.spectrum.spectrum.Spectrum.to_hdf5`
+        """
+        from radis.io.spec_hdf import hdf2spec
+
+        s = hdf2spec(
+            file, wmin=wmin, wmax=wmax, wunit=wunit, columns=columns, engine=engine
+        )
+
+        # Store filename
+        s.file = file
+        return s
+
+    @classmethod
+    def from_spec(self, file):
+        """Generates a Spectrum from a .spec [json] file. Uses :py:func:`~radis.tools.database.load_spec`"""
+        from radis.tools.database import load_spec
+
+        return load_spec(file)
+
+    @classmethod
+    def from_specutils(self, spectrum, var="radiance"):
+        """Convert a ``specutils`` :py:class:`specutils.spectra.spectrum1d.Spectrum1D`
+        to a ``radis`` :py:class:`~radis.spectrum.spectrum.Spectrum` object.
+
+        Examples
+        --------
+
+        Taken from the Specutils website (https://specutils.readthedocs.io/en/stable/#getting-started-with-specutils)
+        ::
+
+            from astropy.io import fits
+            from astropy import units as u
+            from specutils import Spectrum1D
+
+            f = fits.open('https://data.sdss.org/sas/dr16/sdss/spectro/redux/26/spectra/1323/spec-1323-52797-0012.fits')
+            # The spectrum is in the second HDU of this file.
+            specdata = f[1].data
+
+            lamb = 10**specdata['loglam'] * u.AA
+            flux = specdata['flux'] * 10**-17 * u.Unit('erg cm-2 s-1 AA-1')
+            spec = Spectrum1D(spectral_axis=lamb, flux=flux)
+
+
+            from radis import Spectrum
+            s = Spectrum.from_specutils(spec)
+            s.plot(wunit='nm')
+
+
+        .. minigallery:: radis.spectrum.spectrum.Spectrum.from_specutils
+
+        See Also
+        --------
+        :py:func:`~radis.spectrum.spectrum.Spectrum.to_specutils`
+        """
+        try:
+            import specutils
+        except ModuleNotFoundError as err:
+            raise ModuleNotFoundError(
+                "Specutils is required to use this function."
+                "Install it with:\n"
+                "   conda install -c conda-forge specutils"
+                "\nor\n"
+                "   pip install specutils"
+            ) from err
+
+        assert isinstance(spectrum, specutils.Spectrum1D)
+
+        # Convert to radis Spectrum
+        # note : in Specutils wavelengths are given as wavelength in vacuum (1e7/X conversion
+        # to wavenumbers), so here we give the frequency unit.
+        return Spectrum.from_array(
+            spectrum.wavelength.to("1 / cm"),
+            spectrum.flux,
+            quantity=var,
+            conditions=spectrum.meta,
+        )
+
     # Public functions
     # %% ======================================================================
     # ----------------
@@ -762,7 +925,7 @@ class Spectrum(object):
 
         Parameters
         ----------
-        var: variable ('absorbance', 'transmittance', etc.)
+        var: variable (``'absorbance'``, ``'transmittance'``, ``'xsection'`` etc.)
             Should be a defined quantity among :data:`~radis.spectrum.utils.CONVOLUTED_QUANTITIES`
             or :data:`~radis.spectrum.utils.NON_CONVOLUTED_QUANTITIES`.
             To get the full list of quantities defined in this Spectrum object use
@@ -822,9 +985,13 @@ class Spectrum(object):
                     + ". Have you used .apply_slit()?"
                 )
             else:
-                raise KeyError(
-                    "{0} not in quantity list: {1}".format(var, self.get_vars())
-                )
+                # Try to compute it automatically :
+                try:
+                    self.update(var)
+                except ValueError as err:
+                    raise ValueError(
+                        f"{var} not in Spectrum arrays {self.get_vars()}. An error occured while trying to recompute it from the available arrays and conditions. See above"
+                    ) from err
 
         # Get quantity
         I = self._q[var]
@@ -836,8 +1003,7 @@ class Spectrum(object):
         # Get wavespace (in correct unit, and correct medium)
         if wunit == "default":
             wunit = self.get_waveunit()
-        else:
-            wunit = cast_waveunit(wunit)
+        wunit = cast_waveunit(wunit)
         if wunit == "cm-1":
             w = self.get_wavenumber(copy=copy)
         elif wunit == "nm":
@@ -1169,7 +1335,26 @@ class Spectrum(object):
             If 'default', the value is determined from the self_absorption key
             in Spectrum.conditions. If not given, False is taken. Default 'default'
             Also updates the self_absorption value in conditions (creates it if
-            doesnt exist)
+            doesnt exist
+
+        Examples
+        --------
+        Initialize a spectrum from the absorption coefficient, retrieve the transmittance
+        or the emission coefficient :
+        ::
+
+            s = Spectrum.from_array([1900.  , 1900.01, 1900.02, 1900.03, 1900.04, 1900.05, 1900.06,
+                                     1900.07, 1900.08, 1900.09],
+                                    [2.71414065e-06, 2.88341489e-06, 3.06942277e-06, 3.27445689e-06,
+                                     3.50121831e-06, 3.75290756e-06, 4.03334037e-06, 4.34709612e-06,
+                                     4.69971017e-06, 5.09792551e-06],
+                                    'abscoeff', wunit='cm-1', Iunit='cm-1',
+                                    conditions={'path_length':1, # cm
+                                                'thermal_equilibrium':True,
+                                                'Tgas':700,  # K
+                                                })
+            s.update('transmittance_noslit')
+            s.update('emisscoeff')
 
         See Also
         --------
@@ -1216,6 +1401,7 @@ class Spectrum(object):
         Examples
         --------
         ::
+
             for path in [0.1, 10, 100]:
                 s.rescale_path_length(10, inplace=False).plot(nfig='same')
 
@@ -1279,6 +1465,7 @@ class Spectrum(object):
         Examples
         --------
         ::
+
             s.rescale_mole_fraction(0.2)
 
         .. minigallery:: radis.spectrum.spectrum.Spectrum.rescale_mole_fraction
@@ -1410,6 +1597,11 @@ class Spectrum(object):
         s: Spectrum
             sorted Spectrum. If ``inplace=True``, Spectrum has been updated
             directly anyway. Allows :ref:`chaining <label_spectrum_chaining>`.
+
+        Examples
+        --------
+
+        .. minigallery:: radis.spectrum.spectrum.Spectrum.sort
 
         """
 
@@ -1626,7 +1818,7 @@ class Spectrum(object):
 
         Parameters
         ----------
-        var: variable (`absorbance`, `transmittance`, `transmittance_noslit`, etc.)
+        var: variable (`absorbance`, `transmittance`, `transmittance_noslit`, `xsection`, etc.)
             For full list see :py:meth:`~radis.spectrum.spectrum.Spectrum.get_vars()`.
             If ``None``, plot the first thing in the Spectrum. Default ``None``.
         wunit: ``'default'``, ``'nm'``, ``'cm-1'``, ``'nm_vac'``,
@@ -1822,9 +2014,7 @@ class Spectrum(object):
         plt.ticklabel_format(useOffset=False, axis="x")
         plt.xlabel(xlabel)
         plt.ylabel(ylabel)
-
         plt.yscale(yscale)
-
         if "label" in kwargs:
             plt.legend()
         fix_style()
@@ -1847,6 +2037,7 @@ class Spectrum(object):
 
         if show:
             plt.show()
+
         return line
 
     def get_populations(self, molecule=None, isotope=None, electronic_state=None):
@@ -1863,7 +2054,6 @@ class Spectrum(object):
         electronic_state: str
             if None, only one electronic state must be defined. Else, an error
             is raised
-
 
         Returns
         -------
@@ -2202,6 +2392,8 @@ class Spectrum(object):
                 wavelengths and intensity (doesn't have to be normalized)
             If ``array``:
                 format must be 2-columns with wavelengths and intensity (doesn't have to be normalized)
+                It is recommended to truncate the input slit function to its minimum useful spectral
+                extension (see Notes of :func:`~radis.tools.slit.convolve_with_slit`).
         unit: ``'nm'`` or ``'cm-1'``
             unit of slit_function (FWHM, or imported file)
         shape: ``'triangular'``, ``'trapezoidal'``, ``'gaussian'``, or any of :data:`~radis.tools.slit.SLIT_SHAPES`
@@ -2340,18 +2532,16 @@ class Spectrum(object):
 
             s.apply_slit(1.2, 'nm')
 
-        To manually apply the slit to a particular quantity use::
+        This applies the instrumental function to all available spectral arrays.
+        To manually apply the slit to a particular spectral array, use
+        :py:meth:`~radis.spectrum.spectrum.Spectrum.take` ::
 
-            wavenum, quantity = s['quantity']
-            s['convolved_quantity'] = convolve_slit(wavenum, quantity,
-                slit_function_base)
+            s.take('transmittance_noslit').apply_slit(1.2, 'nm')
 
         See :func:`~radis.tools.slit.convolve_with_slit` for more details on Units and Normalization
 
         The slit is made considering the "center wavelength" which is
         the mean wavelength of the full spectrum you are applying it to.
-
-        Examples using apply_slit :
 
         .. minigallery:: radis.Spectrum.apply_slit
             :add-heading:
@@ -2448,7 +2638,7 @@ class Spectrum(object):
                 w_nm, wslit0_nm, slit_dispersion, slit_dispersion_threshold
             )
         else:
-            slice_windows = [np.ones_like(w, dtype=np.bool)]
+            slice_windows = [np.ones_like(w, dtype=bool)]
 
         # Create dictionary to store convolved
         I_conv_slices = {}
@@ -2761,9 +2951,12 @@ class Spectrum(object):
         spec: Spectrum
             result from SpectrumFactory calculation (see spectrum.py)
         overlay: 'absorbance', 'transmittance', 'radiance', etc... or list of the above, or None
-            overlay Linestrength with specified variable calculated in `spec`.
+            overlay Linestrength with specified variable calculated
+            in `spec`.
             Get the full list with the :meth:`~radis.spectrum.spectrum.Spectrum.get_vars`
-            method. Default ``None``.
+            method. Default ``None`` ::
+
+                s.lineSurvey(overlay='abscoeff')
         wunit: ``'default'``, ``'nm'``, ``'cm-1'``, ``'nm_vac'``,
             wavelength air, wavenumber, or wavelength vacuum. If ``'default'``,
             Spectrum :py:meth:`~radis.spectrum.spectrum.Spectrum.get_waveunit` is used.
@@ -2788,9 +2981,15 @@ class Spectrum(object):
 
             Note: if not None, cutoff criteria is applied in this unit.
             Not used if plot is not 'S'
+        barwidth: float or str
+            if float, width of bars, in ``wunit``, as a fraction of full-range; i.e. ::
 
-        barwidth: float
-            With of bars in LineSurvey. Default 0.07
+                barwidth=0.01
+
+            makes bars span 1% of the full range.
+            if ``str``, uses the column as width. Example ::
+
+                barwidth = 'hwhm_voigt'
 
 
 
@@ -2819,7 +3018,7 @@ class Spectrum(object):
             sf.load_databank('HITRAN-CO2-TEST')
             s = sf.eq_spectrum(Tgas=1500)
             s.apply_slit(0.5)
-            s.line_survey(overlay='radiance_noslit', barwidth=0.01)
+            s.line_survey(overlay='radiance_noslit', barwidth=0.01)  # or barwidth='hwhm_voigt'
 
         See the output in :ref:`Examples <label_examples>`
 
@@ -2997,11 +3196,6 @@ class Spectrum(object):
         Spectrum conditions and get Spectrum that suits specific parameters.
 
 
-        Implementation:
-
-            Shouldnt rely on a Database. One may just want to store/load a Spectrum
-            once.
-
         Examples
         --------
         Store a spectrum in compressed mode, regenerate quantities after loading::
@@ -3051,6 +3245,137 @@ class Spectrum(object):
         """
 
         return self.store(*args, **kwargs)
+
+    def to_json(self, *args, **kwargs):
+        """Alias to Spectrum.store(compress=False).
+
+        See Spectrum. :py:meth:`~radis.spectrum.spectrum.Spectrum.store` for documentation
+        """
+
+        return self.store(compress=False, *args, **kwargs)
+
+    def to_hdf5(self, file, engine="pytables"):
+        """Stores the Spectrum under HDF5 format. Uses :py:func:`~radis.io.spec_hdf.spec2hdf`
+
+        Examples
+        --------
+        ::
+
+            s.to_hdf5('spec01.h5')
+
+        See Also
+        --------
+        :py:func:`~radis.spectrum.spectrum.Spectrum.from_hdf5`
+        """
+        from radis.io.spec_hdf import spec2hdf
+
+        return spec2hdf(self, file, engine=engine)
+
+    def to_pandas(self, copy=True):
+        """Convert a Spectrum to a Pandas DataFrame
+
+        Returns
+        -------
+        pd.DataFrame : pandas DataFrame where columns are spectral arrays, and
+            units are stored in attributes ``df.attrs``
+
+        Notes
+        -----
+        Pandas does not support units yet. pint-pandas is an advanced
+        project but not fully working.
+        See discussion in https://github.com/pandas-dev/pandas/issues/10349
+
+        For the moment, we store units as metadata"""
+        import pandas as pd
+
+        df = pd.DataFrame(self._q, copy=copy)
+
+        df.attrs = self.units
+
+        return df
+
+    def to_specutils(self, var=None, wunit="default", Iunit="default"):
+        """Convert a ``radis`` :py:class:`~radis.spectrum.spectrum.Spectrum`
+        object to ``specutils`` :py:class:`specutils.spectra.spectrum1d.Spectrum1D`
+
+        Parameters
+        ----------
+        var: 'radiance', 'radiance_noslit', etc.
+            which spectral array to convert. If ``None`` and only one spectral
+            arry is defined, use it
+        wunit: ``'nm'``, ``'cm'``, ``'nm_vac'``.
+            wavespace unit: wavelength in air (``'nm'``), wavenumber
+            (``'cm-1'``), or wavelength in vacuum (``'nm_vac'``).
+            if ``"default"``, default unit for waveunit is used. See
+            :py:meth:`~radis.spectrum.spectrum.Spectrum.get_waveunit`.
+        Iunit: unit for variable ``var``
+            if ``"default"``, default unit for quantity `var` is used. See the
+            :py:attr:`~radis.spectrum.spectrum.Spectrum.units` attribute.
+            For ``var="radiance"``, one can use per wavelength (~ 'W/m2/sr/nm')
+            or per wavenumber (~ 'W/m2/sr/cm-1') units
+
+        .. note::
+            `nan`, that may have been added on the wings of the spectra if a
+            slit has been applied, are removed using ``trim_nan`` parameter of
+            :py:meth:`~radis.spectrum.spectrum.Spectrum.get` . The waverange
+            in the 1DSpectrum object may therefore be cropped.
+
+        Examples
+        --------
+        ::
+
+            spectrum = s.to_specutils()
+
+        Add uncertainties by reading a spectrum noise region with
+        :py:class:`~specutils.SpectralRegion` and
+        :py:func:`~specutils.manipulation.noise_region_uncertainty` ::
+
+            from specutils import SpectralRegion
+            from specutils.manipulation import noise_region_uncertainty
+            noise_region = SpectralRegion(2012 / u.cm, 2009 / u.cm)
+            spectrum = noise_region_uncertainty(spectrum, noise_region)
+
+        Find lines out of the noise using :py:func:`~specutils.fitting.find_lines_threshold` ::
+
+            from specutils.fitting import find_lines_threshold
+            lines = find_lines_threshold(spectrum)
+
+        .. minigallery:: radis.spectrum.spectrum.Spectrum.to_specutils
+            :add-heading:
+
+        See Also
+        --------
+        :py:func:`~radis.spectrum.spectrum.Spectrum.from_specutils`
+
+        """
+        try:
+            from specutils.spectra import Spectrum1D
+        except ModuleNotFoundError as err:
+            raise ModuleNotFoundError(
+                "Specutils is required to use this function."
+                "Install it with:\n"
+                "   conda install -c conda-forge specutils"
+                "\nor\n"
+                "   pip install specutils"
+            ) from err
+
+        if var is None:
+            var = self._get_unique_var(operation_name="to_specutils")
+        if wunit == "default":
+            wunit = self.get_waveunit()
+        if Iunit == "default":
+            Iunit = self.units[var]
+
+        if wunit in WAVELEN_UNITS:
+            wunit = "nm_vac"  # AFAIK, specutil's Spectrum1D will only handle wavelengths as seen in vacuum
+            # so below we request wavelengths in vac :
+
+        w, I = self.get(var, wunit=wunit, Iunit=Iunit, copy=True, trim_nan=True)
+        return Spectrum1D(
+            flux=I * u.Unit(Iunit),
+            spectral_axis=w * u.Unit(wunit),
+            meta=self.get_conditions(),
+        )
 
     def resample(
         self,
@@ -3346,6 +3671,9 @@ class Spectrum(object):
         quantity: 'all', or one of 'radiance_noslit', 'absorbance', etc.
             if not 'all', copy only one quantity. Default ``'all'``
 
+        Examples
+        --------
+
         .. minigallery:: radis.spectrum.spectrum.Spectrum.copy
             :add-heading:
 
@@ -3546,7 +3874,7 @@ class Spectrum(object):
     def cite(self, format="bibentry"):
         """Prints bibliographic references used to compute this spectrum, as
         stored in the :py:attr:`~radis.spectrum.spectrum.Spectrum.references`
-        dictionary.
+        dictionary. Default references known to RADIS are listed in :py:data:`radis.db.references.doi`.
 
         Parameters
         ----------
@@ -3685,13 +4013,17 @@ class Spectrum(object):
 
         .. raw:: html
 
-        </details>
+            </details>
+
+        Other Examples
+        --------------
 
         .. minigallery:: radis.spectrum.spectrum.Spectrum.cite
 
         See Also
         --------
-        :py:class:`~radis.tools.track_ref.RefTracker`
+        :py:class:`~radis.tools.track_ref.RefTracker`,
+        :py:data:`~radis.db.references.doi`
 
         """
 
@@ -3849,7 +4181,7 @@ class Spectrum(object):
         Parameters
         ----------
         var : str
-            spectral quantity
+            spectral quantity (``'absorbance'``, ``'transmittance'``, ``'xsection'`` etc.)
 
         Returns
         -------
@@ -3858,8 +4190,7 @@ class Spectrum(object):
 
         Examples
         --------
-
-        Use it to chain other commands ::
+        Use ``take`` to chain other commands ::
 
             s.take('radiance').normalize().plot()
 
@@ -3875,59 +4206,91 @@ class Spectrum(object):
     def _get_unique_var(self, operation_name="algebraic"):
         quantities = self.get_vars()
         if len(quantities) > 1:
-            raise KeyError(
-                "There is an ambiguity with the Spectrum {0} operation. ".format(
+            raise ValueError(
+                "There is an ambiguity with the Spectrum `{0}()` operation. ".format(
                     operation_name
                 )
-                + "There should be only one var in Spectrum {0}. Got {1}\n".format(
-                    self.get_name(), self.get_vars()
+                + "There are currently multiple spectral arrays in the Spectrum {0} ({1})\n\n".format(
+                    self.get_name(), ", ".join(self.get_vars())
                 )
-                + "Use `s.take('transmittance')` or `s.take('radiance')`, etc. to extract the "
-                "one spectral quantity you want."
+                + f"Use `s.take('transmittance').{operation_name}()` or `s.take('radiance').{operation_name}()`"
+                f", etc. to apply `{operation_name}()` to the one spectral array you want."
             )
         elif len(quantities) == 0:
-            raise KeyError(
-                "No spectral quantity defined in Spectrum {0}".format(self.get_name())
+            raise ValueError(
+                "No spectral array defined in Spectrum {0}".format(self.get_name())
             )
         else:
             var = quantities[0]
         return var
 
-    def max(self):
+    def max(self, value_only=False):
         """Maximum of the Spectrum, if only one spectral quantity is
         available::
 
             s.max()
 
-        Else, use :func:`~radis.spectrum.operations.Radiance`,
-        :func:`~radis.spectrum.operations.Radiance_noslit`,
-        :func:`~radis.spectrum.operations.Transmittance` or
-        :func:`~radis.spectrum.operations.Transmittance_noslit`  ::
+        Returns a dimensioned quantity by default, with the default unit of the spectrum.
+        If ``value_only=False``, a float is returned, without dimensions.
 
-            Radiance(s).max()
+        If there are multiple arrays in your Spectrum, use
+        :py:meth:`~radis.spectrum.spectrum.Spectrum.take`, e.g. ::
+
+            s.take('radiance').max()
+
+        Examples
+        --------
+        Normalize a spectrum (we could also have used :py:meth:`~radis.spectrum.spectrum.Spectrum.normalize`
+        directly) ::
+
+            s /= s.max()
+
+        Below is a slightly more advanced use case, convenient to process
+        non-calibrated experimental data.
+
+        Imagine we want to remove a baseline that we have identified to originate from
+        a particular species, modelled by spectrum ``s``, but whose intensity
+        (and units) are not the same as that of the experimental spectrum.
+
+        We substract exactly the intensity that correspond to the intensity on a given range ``w1, w2`` of the experimental
+        spectrum ``s_exp``, using a combination of :py:meth:`~radis.spectrum.spectrum.Spectrum.take`,
+        :py:meth:`~radis.spectrum.spectrum.Spectrum.normalize`,
+        :py:meth:`~radis.spectrum.spectrum.Spectrum.crop` and :py:meth:`~radis.spectrum.spectrum.Spectrum.max`:
+        ::
+
+            s_exp -= s.take('radiance').normalize() * s_exp.crop((w1, w2)), inplace=False).max()
+
         """
 
         var = self._get_unique_var(operation_name="max")
         w, I = self.get(var, wunit=self.get_waveunit(), copy=False)
-        return I[~np.isnan(I)].max()
+        if value_only:
+            return I[~np.isnan(I)].max()
+        else:
+            return I[~np.isnan(I)].max() * Unit(self.units[var])
 
-    def min(self):
+    def min(self, value_only=True):
         """Minimum of the Spectrum, if only one spectral quantity is available
         ::
 
             s.min()
 
-        Else, use :func:`~radis.spectrum.operations.Radiance`,
-        :func:`~radis.spectrum.operations.Radiance_noslit`,
-        :func:`~radis.spectrum.operations.Transmittance` or
-        :func:`~radis.spectrum.operations.Transmittance_noslit`  ::
+        Returns a dimensioned quantity by default, with the default unit of the spectrum.
+        If ``value_only=False``, a float is returned, without dimensions.
 
-            Radiance(s).min()
+        If there are multiple arrays in your Spectrum, use
+        :py:meth:`~radis.spectrum.spectrum.Spectrum.take`, e.g. ::
+
+            s.take('radiance').min()
+
         """
 
         var = self._get_unique_var(operation_name="min")
         w, I = self.get(var, wunit=self.get_waveunit(), copy=False)
-        return I[~np.isnan(I)].min()
+        if value_only:
+            return I[~np.isnan(I)].min()
+        else:
+            return I[~np.isnan(I)].min() * Unit(self.units[var])
 
     def normalize(
         self,
@@ -3964,7 +4327,13 @@ class Spectrum(object):
         Examples
         --------
         ::
+
             s.normalize("max", (4200, 4800), inplace=True).plot()
+
+        If there are multiple arrays in your Spectrum, use
+        :py:meth:`~radis.spectrum.spectrum.Spectrum.take`, e.g. ::
+
+            s.take('radiance').normalize(wrange=(4200, 4800)).plot()
 
         .. minigallery:: radis.spectrum.spectrum.Spectrum.normalize
 
@@ -4026,6 +4395,51 @@ class Spectrum(object):
             print("Normalization factor : {0}".format(norm))
         return out
 
+    def get_baseline(self, algorithm="als", **kwargs):
+        """
+        Calculate and returns a baseline
+
+        Parameters
+        ----------
+        s: Spectrum
+            Spectrum which needs a baseline
+        var: str
+            on which spectral quantity to read the baseline. Default ``'radiance'``.
+            See :py:data:`~radis.spectrum.utils.SPECTRAL_QUANTITIES`
+        algorithm: 'als', 'polynomial'
+            Asymmetric least square or Polynomial fit
+        **kwargs: dict
+            additional parameters to send to the algorithm. By default,
+            for 'polynomial':
+
+                **kwargs = **{"deg": 1, "max_it":500}
+
+            for 'als':
+
+                **kwargs = {"asymmetry_param": 0.05,
+                            "smoothness_param": 1e6}
+
+        Returns
+        -------
+        baseline: Spectrum
+            Spectrum object where intenisity is the baseline of s
+
+        Examples
+        --------
+
+        .. minigallery:: radis.spectrum.spectrum.Spectrum.get_baseline
+
+        See also
+        --------
+        :py:func:`~radis.spectrum.operations.get_baseline`
+
+        """
+        from radis.spectrum.operations import get_baseline
+
+        var = self._get_unique_var(operation_name="get_baseline")
+
+        return get_baseline(self, var, **kwargs)
+
     # %% Performance / profilers
 
     def print_perf_profile(self, number_format="{:.3f}", precision=16):
@@ -4059,11 +4473,11 @@ class Spectrum(object):
                     calc_hwhm                        0.007s
                     generate_wavenumber_arrays       0.001s
                     calc_line_broadening             0.074s ██████
-                        precompute_DLM_lineshapes        0.012s
-                        DLM_Initialized_vectors          0.000s
-                        DLM_closest_matching_line        0.001s
-                        DLM_Distribute_lines             0.001s
-                        DLM_convolve                     0.060s █████
+                        precompute_LDM_lineshapes        0.012s
+                        LDM_Initialized_vectors          0.000s
+                        LDM_closest_matching_line        0.001s
+                        LDM_Distribute_lines             0.001s
+                        LDM_convolve                     0.060s █████
                         others                           0.001s
                     calc_other_spectral_quan         0.003s
                     generate_spectrum_obj            0.000s
@@ -4163,7 +4577,7 @@ class Spectrum(object):
         elif isinstance(other, np.ndarray):
             from radis.spectrum.operations import add_array
 
-            return add_array(self, other, inplace=True)
+            return add_array(self, other, inplace=False)
         elif isinstance(other, Spectrum):
             from radis.spectrum.operations import add_spectra
 
