@@ -96,26 +96,29 @@ from radis.spectrum.utils import print_conditions
 
 class BaseFactory(DatabankLoader):
 
-    # Output units
     units = {
+        "waverange": "cm-1",  # should be "cm-1", "nm" [assumes in air], "nm_vac" [in vacuum]. Note that Radis caluclations will still happen in cm-1, units are converted at the export only.
         "absorbance": "",
         "abscoeff": "cm-1",
         "abscoeff_continuum": "cm-1",
-        # TODO: deal with case where 'cm-1' is given as input for a Spectrum
-        # (write a cast_unit of some kind)
-        # different in Specair (mw/cm2/sr) because slit
-        "radiance": "mW/cm2/sr/nm",
+        # # different in Specair (mw/cm2/sr) because slit
+        # "radiance": "mW/cm2/sr/cm-1",
         # function is not normalized to conserve energy
-        "radiance_noslit": "mW/cm2/sr/nm",  # it's actually a spectral radiance
-        "emisscoeff": "mW/cm3/sr/nm",
-        "emisscoeff_continuum": "mW/cm3/sr/nm",
-        "emissivity": "",
+        "radiance_noslit": "mW/cm2/sr/cm-1",  # it's actually a spectral radiance
+        "emisscoeff": "mW/cm3/sr/cm-1",
+        "emisscoeff_continuum": "mW/cm3/sr/cm-1",
+        # "emissivity": "",
         "emissivity_noslit": "",
-        "transmittance": "",
+        # "transmittance": "",
         "transmittance_noslit": "",
     }
+    """
+    Default output units
+    ... may be changed at the initialisation of the SpectrumFactory, for instance
+    ... if user gives wavelength units we want to return radiance in
+    ... "mW/cm2/sr/nm" units for consistency
+    """
 
-    # Calculation Conditions units
     cond_units = {
         "wavenum_min": "cm-1",
         "wavenum_max": "cm-1",
@@ -138,6 +141,9 @@ class BaseFactory(DatabankLoader):
         # The later is never stored in Factory, but exported in Spectrum at the end of the calculation
         "calculation_time": "s",
     }
+    """
+    Calculation Conditions units
+    """
 
     def __init__(self):
         """
@@ -148,6 +154,10 @@ class BaseFactory(DatabankLoader):
         """
 
         super(BaseFactory, self).__init__()  # initialize parent class
+
+        # Make units specific to this BaseFactory instance :
+        self.units = BaseFactory.units.copy()
+        self.cond_units = BaseFactory.cond_units.copy()
 
         # Define variable names
         # ... Note: defaults values are overwritten by SpectrumFactory input
@@ -184,7 +194,6 @@ class BaseFactory(DatabankLoader):
 
         Parameters
         ----------
-
         preprend: str
             just to text to display before printing conditions
         """
@@ -194,24 +203,20 @@ class BaseFactory(DatabankLoader):
 
         conditions = self.get_conditions()
 
-        return print_conditions(conditions, self.cond_units)
+        return print_conditions(conditions, self.cond_units, verbose=self.verbose)
 
-    def get_energy_levels(self, molecule, isotope, state, conditions=None):
+    def get_energy_levels(self, molecule, isotope, state="X", conditions=None):
         """Return energy levels database for given molecule > isotope > state
         (look up Factory.parsum_calc[molecule][iso][state])
 
         Parameters
         ----------
-
         molecule: str
             molecule name
-
         isotope: int
             isotope identifier
-
         state: str:
-            electronic state
-
+            electronic state. Default ``'X'`` (ground-state)
         conditions: str, or ``None``
             if not None, add conditions on which energies to retrieve, e.g:
 
@@ -222,14 +227,12 @@ class BaseFactory(DatabankLoader):
 
         Returns
         -------
-
         energies: pandas Dataframe
             a view of the energies stored in the Partition Function calculator
             for isotope iso. If conditions are applied, we get a copy
 
         See Also
         --------
-
         :meth:`~radis.lbl.base.BaseFactory.get_populations`
         """
 
@@ -242,7 +245,15 @@ class BaseFactory(DatabankLoader):
 
     def plot_linestrength_hist(self, cutoff=None):
         """Plot linestrength distribution (to help determine a cutoff
-        criteria)"""
+        criteria)
+
+        Examples
+        --------
+        ::
+
+            s, sf = calc_spectrum(..., return_factory=True)
+            sf.plot_linestrength_hist()
+        """
         return self.plot_hist("df1", "S", axvline=np.log10(cutoff))
 
     def plot_hist(self, dataframe="df0", what="int", axvline=None):
@@ -1447,7 +1458,7 @@ class BaseFactory(DatabankLoader):
             if k not in df:
                 error_details = ""
                 if "globu" in df:
-                    error_details = ". However, it looks like `globu` is defined. Maybe HITRAN-like database wasn't fully parsed? See radis.io.hitran.hit2df"
+                    error_details = ". However, it looks like `globu` is defined. Maybe HITRAN-like database wasn't fully parsed? See radis.api.hitranapi.hit2df"
                 raise KeyError(
                     f"`{k}` not defined in database ({list(df.columns)}). "
                     + error_details
@@ -1613,6 +1624,19 @@ class BaseFactory(DatabankLoader):
         df["gu"] = df.gvibu * df.grotu
         df["gl"] = df.gvibl * df.grotl
 
+        # Check consistency if "gp" already existed
+        # https://github.com/radis/radis/pull/514#issuecomment-1229463074
+        if "gp" in df:
+            if (df["gp"] == df["gu"]).all():
+                self.warn(
+                    "'gu' was recomputed although 'gp' already in DataFrame. All values are equal",
+                    "PerformanceWarning",
+                )
+            else:
+                raise ValueError(
+                    "'gu' was recomputed although 'gp' already in DataFrame. Values are not equal ! Check calculations"
+                )
+
         return None  # dataframe updated directly
 
     def get_lines_abundance(self, df):
@@ -1669,46 +1693,27 @@ class BaseFactory(DatabankLoader):
         -------
         The molar mass of all the isotopes in the dataframe
 
-
-        Notes
-        -----
-
-        If molar mass is unknown, it can be temporarily added in the
-        :py:attr:`radis.lbl.loader.DatabankLoader._EXTRA_MOLAR_MASS` dictionary
         """
         molpar = self.molparam
 
         if "id" in df.columns:
-            raise NotImplementedError(">1 molecule")
-        elif "id" in df.attrs:
-            id = df.attrs["id"]
+            raise NotImplementedError(
+                "'id' still in DataFrame columsn. Is there more than 1 molecule ?"
+            )
+        if "id" in df.attrs:
+            molecule = df.attrs["id"]
         else:
-            # HARDCODED molar mass; for WIP ExoMol implementation, until MolParams
-            # is an attribute and can be updated with definitions from ExoMol.
-            # https://github.com/radis/radis/issues/321
-
-            # see :py:attr:`radis.lbl.loader.DatabankLoader._EXTRA_MOLAR_MASS`
-            try:
-                return self._EXTRA_MOLAR_MASS[df.attrs["molecule"]][
-                    str(df.attrs["iso"])
-                ]
-            except KeyError:
-                raise NotImplementedError(
-                    "Molar mass of {0} (isotope {1}) is unknown.".format(
-                        df.attrs["molecule"], df.attrs["iso"]
-                    )
-                    + " You can manually add it in your radis.json file {'molparams':{'molar_mass':{'molecule':{'ISOTOPE':...}}}}; or in the SpectrumFactory._EXTRA_MOLAR_MASS[molecule][isotope] = M (g/mol) dictionary. Please also report on GitHub so we can update !"
-                )
+            molecule = df.attrs["molecule"]
 
         if "iso" in df.columns:
             iso_set = df.iso.unique()
             molar_mass_dict = {}
             for iso in iso_set:
-                molar_mass_dict[iso] = molpar.get(id, iso, "mol_mass")
+                molar_mass_dict[iso] = molpar.get(molecule, iso, "mol_mass")
             molar_mass = df["iso"].map(molar_mass_dict)
         else:
             iso = df.attrs["iso"]
-            molar_mass = molpar.get(id, iso, "mol_mass")
+            molar_mass = molpar.get(molecule, iso, "mol_mass")
 
         return molar_mass
 
@@ -1755,7 +1760,7 @@ class BaseFactory(DatabankLoader):
         )  # reference linestrength   ( computed with terrestrial isotopic abundances)
 
         weighted_trans_moment_sq = (
-            (3 * h * c / 8 / pi ** 3)
+            (3 * h * c / 8 / pi**3)
             / nu
             / (Ia * gl / self.Qgas(df, Tref) * exp(-hc_k * El / Tref))
             / (1 - exp(-hc_k * nu / Tref))
@@ -1897,11 +1902,11 @@ class BaseFactory(DatabankLoader):
         h = h_CGS  # erg.s
 
         # Calculate coefficients
-        df["Blu"] = 8 * pi ** 3 / (3 * h ** 2) * Rs2 * 1e-36 * 1e7  # cm3/(J.s^2)
+        df["Blu"] = 8 * pi**3 / (3 * h**2) * Rs2 * 1e-36 * 1e7  # cm3/(J.s^2)
         df["Bul"] = (
-            8 * pi ** 3 / (3 * h ** 2) * (gl / gu) * Rs2 * 1e-36 * 1e7
+            8 * pi**3 / (3 * h**2) * (gl / gu) * Rs2 * 1e-36 * 1e7
         )  # cm3/(J.s^2)
-        df["Aul"] = 64 * pi ** 4 / (3 * h) * nu ** 3 * gl / gu * Rs2 * 1e-36  # s-1
+        df["Aul"] = 64 * pi**4 / (3 * h) * nu**3 * gl / gu * Rs2 * 1e-36  # s-1
 
         return None  # dataframe updated directly
 
@@ -2005,12 +2010,21 @@ class BaseFactory(DatabankLoader):
 
         self.profiler.start("scaled_S0", 2, "... Scaling equilibrium linestrength")
 
-        gp = df0["gp"]
+        try:
+            gp = df0["gp"]
+        except (KeyError):
+
+            if not "gu" in df0:
+                if not "ju" in df0:
+                    self._add_ju(df0)
+                self._calc_degeneracies(df0)
+            gp = df0["gu"]
+
         A = df0["A"]
         wav = df0["wav"]
         Ia = self.get_lines_abundance(df0)
 
-        S0 = Ia * gp * A / (8 * pi * c_cm * wav ** 2)
+        S0 = Ia * gp * A / (8 * pi * c_cm * wav**2)
 
         df0["S0"] = S0  # [cm-1/(molecules/cm-2)]
 
@@ -2452,8 +2466,8 @@ class BaseFactory(DatabankLoader):
                 # ... make sure PartitionFunction above is calculated with the same
                 # ... temperatures, rovibrational distributions and overpopulations
                 # ... as the populations of active levels (somewhere below)
-                df.at[idx, "Qvib"] = Qvib
-                df.at[idx, "Q"] = Q
+                df.loc[idx, "Qvib"] = Qvib
+                df.loc[idx, "Q"] = Q
 
                 # reindexing to get a direct access to Qrot database
                 # create the lookup dictionary
@@ -3077,34 +3091,36 @@ class BaseFactory(DatabankLoader):
 
     # %%
     def calc_emission_integral(self):
-        r"""Calculate Emission Integral.
+        r"""Calculate the emission integral (in :math:`mW/sr`) of all lines in DataFrame ``df1``.
 
         .. math::
-            Ei=\frac{n_u A_{ul}}{4} \pi \Delta E_{ul}
 
-        Emission Integral is a non usual quantity introduced here to have an
-        equivalent of Linestrength in emission calculation
+            E_i=\frac{n_u A_{ul}}{4 \pi} \Delta E_{ul}
+
+        Where :math:`A_{ul}` (:math:`s^{-1}`) is the Einstein coefficient of the corresponding line,
+        :math:`n_u` (in :math:`cm^{-3}/cm^{-3}` is the fraction of the molecule population in the upper rovibrational state,
+        and :math:`\Delta E_{ul}` the transition energy.
+
+        Emission Integral is a non usual quantity introduced in RADIS as an
+        equivalent for emission calculations of the Linestrength quantity used in absorption calculations.
+
+        The emission integral is later multiplied by the total density :math:`n_tot` and the lineshape :math:`\Phi_i` to obtain
+        the spectral emission coefficient :math:`\epsilon_i` associated to each line.
+
+        .. math::
+
+            \epsilon_i(\lambda) = E_i \cdot n_{tot} \cdot \Phi_i(\lambda)
+
+        Which are afterwards summed over all N lines to obtain the total emission coefficient :
+
+        .. math::
+
+            \epsilon(\lambda) = \sum_i^N {\epsilon_i}(\lambda)
 
         Returns
         -------
         None
-            Emission integral `Ei` added in self.df
-
-        Notes
-        -----
-
-        emission_integral: (mW/sr)
-            emission integral is defined as::
-
-            Ei = n_u * A_ul / 4π * DeltaE_ul
-                  :      :     :      :
-                (#/#)  (s-1) (sr)    (mJ)
-
-            So that the radiance ϵ is:
-
-                ϵ(λ)   =      Ei  *   Phi(λ)  * ntot   * path_length
-                 :             :         :       :          :
-            mW/cm2/sr/nm    (mW/sr)   (1/nm)   (cm-3)      (cm)
+            Emission integral `Ei` added in ``df1``
 
         See Also
         --------
@@ -3482,7 +3498,7 @@ class BaseFactory(DatabankLoader):
         fix_style()
 
 
-def get_waverange(
+def get_wavenumber_range(
     wmin=None,
     wmax=None,
     wunit=Default("cm-1"),
@@ -3491,6 +3507,7 @@ def get_waverange(
     wavelength_min=None,
     wavelength_max=None,
     medium="air",
+    return_input_wunit=False,
 ):
     """Returns wavenumber based on whatever input was given: either ν_min,
     ν_max directly, or λ_min, λ_max  in the given propagation ``medium``.
@@ -3511,11 +3528,15 @@ def get_waverange(
         wavelengths in given ``medium``
     Returns
     -------
-    wavenum_min, wavenum_max,: float
+    wavenum_min, wavenum_max: float
         wavenumbers
+    input_wunit: 'nm', 'nm_vac', 'cm-1'
+        in which wavespace was the input given before conversion (used to keep
+        default plot/get consistent with input units)
     """
 
     # Checking consistency of all input variables
+    assert medium in ["air", "vacuum"]
 
     w_present = wmin is not None and wmax is not None
     wavenum_present = wavenum_min is not None and wavenum_max is not None
@@ -3560,6 +3581,7 @@ def get_waverange(
             )
             assert wavelength_min.unit.is_equivalent(u.m)
             assert wavelength_max.unit.is_equivalent(u.m)
+        input_wunit = "wavelength"
 
     if wavenum_min is not None or wavenum_max is not None:
         assert wavenum_min is not None and wavenum_max is not None
@@ -3572,13 +3594,16 @@ def get_waverange(
             )
             assert wavenum_min.unit.is_equivalent(1 / u.cm)
             assert wavenum_max.unit.is_equivalent(1 / u.cm)
+        input_wunit = "wavenumber"
 
     if isinstance(wmin, u.Quantity) or isinstance(wmax, u.Quantity):
         assert wmin is not None and wmax is not None
         assert isinstance(wmin, u.Quantity) and isinstance(wmax, u.Quantity)
-        assert wmin.unit.is_equivalent(u.m) or wmin.unit.is_equivalent(1 / u.m)
-        assert wmax.unit.is_equivalent(u.m) or wmax.unit.is_equivalent(1 / u.m)
-        assert wmin.unit.is_equivalent(wmax.unit)
+        if wmin.unit.is_equivalent(u.m):
+            assert wmax.unit.is_equivalent(u.m)
+        else:
+            assert wmin.unit.is_equivalent(1 / u.m)
+            assert wmax.unit.is_equivalent(1 / u.m)
         if not isinstance(wunit, Default):
             if not wmin.unit.is_equivalent(u.Unit(wunit)):
                 raise ValueError("Conflicting units passed for wmin/wmax and wunit")
@@ -3589,20 +3614,26 @@ def get_waverange(
             if wmin.unit.is_equivalent(u.m):
                 wavelength_min = wmin
                 wavelength_max = wmax
+                input_wunit = "wavelength"
             else:
                 wavenum_min = wmin
                 wavenum_max = wmax
+                input_wunit = "wavenumber"
         else:
             if isinstance(wunit, Default):
                 wavenum_min = wmin * u.Unit(wunit.value)
                 wavenum_max = wmax * u.Unit(wunit.value)
+                assert wunit.value == "cm-1"
+                input_wunit = "wavenumber"
             else:
                 if u.Unit(wunit).is_equivalent(u.m):
                     wavelength_min = wmin * u.Unit(wunit)
                     wavelength_max = wmax * u.Unit(wunit)
+                    input_wunit = "wavelength"
                 else:
                     wavenum_min = wmin * u.Unit(wunit)
                     wavenum_max = wmax * u.Unit(wunit)
+                    input_wunit = "wavenumber"
 
     # We now have wavenum_min/max, or wavelength_min/max defined. Let's convert these to cm-1 (warning: propagating medium is required if we start from wavelengths!)
     if wavenum_min is not None or wavenum_max is not None:
@@ -3625,7 +3656,18 @@ def get_waverange(
             wavenum_min = nm2cm(wavelength_max)
             wavenum_max = nm2cm(wavelength_min)
 
-    return wavenum_min, wavenum_max
+    if return_input_wunit:
+        # get cm-1, nm, nm_vac
+        if input_wunit == "wavenumber":
+            input_wunit = "cm-1"
+        else:
+            assert input_wunit == "wavelength"
+            input_wunit = "nm" if medium == "air" else "nm_vac"
+
+        assert input_wunit in ["cm-1", "nm", "nm_vac"]
+        return wavenum_min, wavenum_max, input_wunit
+    else:
+        return wavenum_min, wavenum_max
 
 
 def linestrength_from_Einstein(
@@ -3676,7 +3718,7 @@ def linestrength_from_Einstein(
     """
 
     return (
-        (1 / (8 * np.pi * c_CGS * nu ** 2))
+        (1 / (8 * np.pi * c_CGS * nu**2))
         * A
         * ((Ia * gu * np.exp(-hc_k * El / T)) / Q)
         * (1 - np.exp(-hc_k * nu / T))

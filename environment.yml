@@ -24,7 +24,7 @@ dependencies:
 - seaborn   # other matplotlib themes
 - termcolor  # terminal colors
 - specutils
-- vaex>=4.6.0   # load HDF5 files  (version for custom HDF5 groups + avoids asyncio https://github.com/vaexio/vaex/pull/1546). #TODO : install only required sub-packages
+- vaex>=4.9.2   # load HDF5 files  (version needed to fix https://github.com/radis/radis/issues/486). #TODO : install only required sub-packages
 - pip
 - pip:
   - beautifulsoup4 # parse ExoMol website
@@ -36,6 +36,6 @@ dependencies:
   - json-tricks>=3.15.0  # to deal with non jsonable formats
   - mpldatacursor
   - progressbar2    # used in vaex
-  - tuna           # to generate visual/interactive performance profiles
+  #- tuna           # to generate visual/interactive performance profiles
   - tables  # for pandas to HDF5 export
   - habanero  # CrossRef API to retrieve data from doi

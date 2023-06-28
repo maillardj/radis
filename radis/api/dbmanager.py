@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Aug  9 19:42:51 2021
 
-@author: erwan
 """
 import os
 import shutil
@@ -16,10 +14,13 @@ from radis.misc.warning import DatabaseAlreadyExists, DeprecatedFileWarning
 
 try:
     from .cache_files import check_not_deprecated
-    from .hdf5 import HDF5Manager, hdf2df
+    from .hdf5 import DataFileManager
 except ImportError:
-    from radis.io.hdf5 import hdf2df, HDF5Manager
-    from radis.io.cache_files import check_not_deprecated
+    if __name__ == "__main__":  # running from this file, as a script
+        from radis.api.cache_files import check_not_deprecated
+        from radis.api.hdf5 import DataFileManager
+    else:
+        raise
 
 from datetime import date
 
@@ -91,67 +92,40 @@ class DatabaseManager(object):
         molecule,
         local_databases,
         engine,
+        extra_params=None,
         verbose=False,
         parallel=True,
         nJobs=-2,
         batch_size="auto",
     ):
-        from os import environ
-
         if engine == "default":
             from radis import config
 
             engine = config["MEMORY_MAPPING_ENGINE"]  # 'pytables', 'vaex', 'feather'
-            # Quick fix for #401
             if engine == "auto":
-                # "auto" uses "vaex" in most cases unless you're using the Spyder IDE (where it may result in freezes).
-                # see https://github.com/spyder-ide/spyder/issues/16183.
-                # and https://github.com/radis/radis/issues/401
-                if any("SPYDER" in name for name in environ):
-                    engine = "pytables"  # for HITRAN and HITEMP databases
-                    if verbose >= 3:
-                        print(
-                            f"Spyder IDE detected. Memory-mapping-engine set to '{engine}' (less powerful than 'vaex' but Spyder user experience freezes). See https://github.com/spyder-ide/spyder/issues/16183. Change this behavior by setting the radis.config['MEMORY_MAPPING_ENGINE'] key"
-                        )
-                # temp fix for vaex not building on RTD
-                # see https://github.com/radis/radis/issues/404
-                elif any("READTHEDOCS" in name for name in environ):
-                    engine = "pytables"  # for HITRAN and HITEMP databases
-                    if verbose >= 3:
-                        print(
-                            f"ReadTheDocs environment detected. Memory-mapping-engine set to '{engine}'. See https://github.com/radis/radis/issues/404"
-                        )
-                else:
-                    engine = "vaex"
-
-        # vaex processes are stuck if ran from Spyder. See https://github.com/spyder-ide/spyder/issues/16183
-        if engine == "vaex" and any("SPYDER" in name for name in environ):
-            from radis.misc.log import printwarn
-
-            printwarn(
-                "Spyder IDE detected while using memory_mapping_engine='vaex'.\nVaex is the fastest way to read database files in RADIS, but Vaex processes may be stuck if ran from Spyder. See https://github.com/spyder-ide/spyder/issues/16183. Quick fix: starting a new console releases the lock, usually for the rest of your session. You may consider using another IDE, or using a different `memory_mapping_engine` such as 'pytables' or 'feather'. You can change the engine in Spectrum.fetch_databank() calls, or globally by setting the 'MEMORY_MAPPING_ENGINE' key in your ~/radis.json \n"
-            )
+                engine = "vaex"
 
         self.name = name
         self.molecule = molecule
         self.local_databases = local_databases
+        self.extra_params = extra_params
         # create folder if needed
         if not exists(local_databases):
             from radis.misc.basics import make_folders
 
-            make_folders(*split(abspath(dirname(local_databases))))
-            make_folders(*split(abspath(local_databases)))
+            make_folders(*split(abspath(dirname(expanduser(local_databases)))))
+            make_folders(*split(abspath(expanduser(local_databases))))
 
         if self.is_registered():
             registered_paths = getDatabankEntries(self.name)["path"]
             for registered_path in registered_paths:
-                if (
-                    not abspath(expanduser(registered_path))
-                    .lower()
-                    .startswith(abspath(expanduser(local_databases).lower()))
+                registered_path_abspath = abspath(expanduser(registered_path)).lower()
+                local_databases_abspath = abspath(expanduser(local_databases).lower())
+                if not registered_path_abspath.startswith(
+                    local_databases_abspath
                 ):  # TODO: replace with pathlib
                     raise ValueError(
-                        f"Databank `{self.name}` is already registered in radis.json but the declared path ({registered_path}) is not in the expected local databases folder ({local_databases}). Please fix/delete the radis.json entry, or change the default local databases path entry 'DEFAULT_DOWNLOAD_PATH' in `radis.config` or ~/radis.json"
+                        f"Databank `{self.name}` is already registered in radis.json but the declared path ({registered_path_abspath}) is not in the expected local databases folder ({local_databases_abspath}). Please fix/delete the radis.json entry, change the `databank_name`, or change the default local databases path entry 'DEFAULT_DOWNLOAD_PATH' in `radis.config` or ~/radis.json"
                     )
 
         self.downloadable = False  # by default
@@ -175,7 +149,7 @@ class DatabaseManager(object):
 
         See Also
         --------
-        :py:meth:`~radis.io.linedb.get_files_to_download`"""
+        :py:meth:`~radis.api.dbmanager.DatabaseManager.get_files_to_download`"""
         verbose = self.verbose
         local_databases = self.local_databases
         engine = self.engine
@@ -199,13 +173,11 @@ class DatabaseManager(object):
 
             # Check that local files are the one we expect :
             for f in local_files:
-                if (
-                    not abspath(expanduser(f))
-                    .lower()
-                    .startswith(abspath(expanduser(local_databases)).lower())
-                ):
+                local_file_abspath = abspath(expanduser(f)).lower()
+                local_databaes_abspath = abspath(expanduser(local_databases)).lower()
+                if not local_file_abspath.startswith(local_databaes_abspath):
                     raise ValueError(
-                        f"Database {self.name} is inconsistent : it should be stored in {local_databases} but files registered in ~/radis.json contains {f}. Please fix or delete the ~/radis.json entry."
+                        f"Database {self.name} is inconsistent : it should be stored in {local_databaes_abspath} but files registered in ~/radis.json contains {local_file_abspath}. Please fix or delete the ~/radis.json entry."
                     )
 
         elif self.is_downloadable():
@@ -245,6 +217,8 @@ class DatabaseManager(object):
         if engine == "vaex":
             local_files = [fname.replace(".h5", ".hdf5") for fname in local_files]
 
+        local_files = [expanduser(f) for f in local_files]
+
         return local_files, urlnames
 
     def fetch_urlnames(self) -> list:
@@ -254,7 +228,7 @@ class DatabaseManager(object):
         -------
         list: list of urlnames
 
-        See for instance :py:meth:`radis.io.hitemp.HITEMPDatabaseManager"""
+        See for instance :py:class:`radis.api.hitempapi.HITEMPDatabaseManager"""
 
         raise NotImplementedError(
             "This function should be overwritten by the DatabaseManager subclass"
@@ -291,7 +265,7 @@ class DatabaseManager(object):
 
         See Also
         --------
-        :py:meth:`~radis.io.linedb.get_filenames`"""
+        :py:meth:`~radis.api.dbmanager.DatabaseManager.get_filenames`"""
         return [k for k in files if exists(k)]
 
     def get_missing_files(self, files):
@@ -304,7 +278,7 @@ class DatabaseManager(object):
 
         See Also
         --------
-        :py:meth:`~radis.io.linedb.get_filenames`"""
+        :py:meth:`~radis.api.dbmanager.DatabaseManager.get_filenames`"""
         return [k for k in files if not exists(k)]
 
     def remove_local_files(self, local_files):
@@ -339,8 +313,10 @@ class DatabaseManager(object):
             self.verbose,
         )
 
-    def get_hdf5_manager(self):
-        return HDF5Manager(engine=self.engine)
+    def get_datafile_manager(self, engine=None):
+        if engine is None:
+            engine = self.engine
+        return DataFileManager(engine=engine)
 
     def download_and_parse(self, urlnames, local_files):
         all_local_files, _ = self.get_filenames()
@@ -440,44 +416,59 @@ class DatabaseManager(object):
     def load(
         self,
         local_files,
-        isotope,
-        columns,
-        load_wavenum_min,
-        load_wavenum_max,
+        columns=None,
+        lower_bound=[],
+        upper_bound=[],
+        within=[],
+        output="pandas",
     ):
         """
         Other Parameters
         ----------------
         columns: list of str
             list of columns to load. If ``None``, returns all columns in the file.
+        output: 'pandas', 'vaex', 'jax'
+            format of the output DataFrame. If ``'jax'``, returns a dictionary of
+            jax arrays.
+        lower_bound: list of tuples [(column, lower_bound), etc.]
+            ::
+
+                lower_bound =[("wav", load_wavenum_min)]
+        upper_bound_bound: list of tuples [(column, upper_bound), etc.]
+            ::
+
+                upper_bound=[("wav", load_wavenum_max)]
+        within: list of tuples [(column, within_list), etc.]
+            ::
+
+                within=[("iso", isotope.split(","))]
         """
         engine = self.engine
-        if engine == "pytables":
+        mgr = self.get_datafile_manager()
+        if engine in ["pytables", "feather"]:
             df_all = []
             for local_file in local_files:
                 df_all.append(
-                    hdf2df(
+                    mgr.load(
                         local_file,
                         columns=columns,
-                        isotope=isotope,
-                        load_wavenum_min=load_wavenum_min,
-                        load_wavenum_max=load_wavenum_max,
-                        verbose=self.verbose,
-                        engine=engine,
+                        lower_bound=lower_bound,
+                        upper_bound=upper_bound,
+                        within=within,
+                        output=output,
                     )
                 )
             return pd.concat(df_all)
 
         elif engine == "vaex":
             # vaex can open several files at the same time:
-            return hdf2df(
+            return mgr.load(
                 local_files,
                 columns=columns,
-                isotope=isotope,
-                load_wavenum_min=load_wavenum_min,
-                load_wavenum_max=load_wavenum_max,
-                verbose=self.verbose,
-                engine=engine,
+                lower_bound=lower_bound,
+                upper_bound=upper_bound,
+                within=within,
+                output=output,
             )
         else:
             raise NotImplementedError(engine)
@@ -491,7 +482,7 @@ class DatabaseManager(object):
         df.plot("wav", "int")
 
     def get_nrows(self, local_file):
-        """ Get number of rows (without loading all DataFrame)"""
+        """Get number of rows (without loading all DataFrame)"""
         engine = self.engine
         local_file = expanduser(local_file)
         if engine == "pytables":
@@ -511,6 +502,41 @@ class DatabaseManager(object):
         else:
             raise ValueError(engine)
         return nrows
+
+    def get_columns(self, local_file):
+        """Get all columns using DataFileManager class get_columns function"""
+        return self.get_datafile_manager().get_columns(local_file)
+
+    def add_column(self, df, key, value):
+        """Create column ``key`` in DataFrame or dictionary ``df`` with value ``value``"""
+        from radis.misc.basics import is_number
+
+        if is_number(self.alpha_ref):
+            import vaex
+
+            if isinstance(df, vaex.dataframe.DataFrameLocal):
+                # see https://github.com/vaexio/vaex/pull/1570
+                df[key] = vaex.vconstant(float(value), length=len(df))
+            else:
+                df[key] = value
+        else:
+            df[key] = value
+
+    def rename_columns(self, df, rename_dict):
+        """Example::
+
+        mdb.rename_columns(df, {"nu_lines":"wav"})
+        """
+        import vaex
+
+        if isinstance(df, vaex.dataframe.DataFrameLocal):
+            for k, v in rename_dict.items():
+                df.rename(k, v)
+        elif isinstance(df, pd.DataFrame):
+            df.rename(columns=rename_dict, inplace=True)
+        elif isinstance(df, dict):
+            for k, v in rename_dict.items():
+                df[v] = df.pop(k)
 
 
 def register_database(databank_name, dict_entries, verbose):

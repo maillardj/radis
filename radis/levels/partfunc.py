@@ -63,6 +63,7 @@ import pandas as pd
 from numpy import exp
 
 import radis
+from radis.api.cache_files import load_h5_cache_file, save_to_hdf
 from radis.db.classes import (
     HITRAN_CLASS1,
     HITRAN_CLASS2,
@@ -72,7 +73,6 @@ from radis.db.classes import (
     get_molecule,
     get_molecule_identifier,
 )
-from radis.io.cache_files import load_h5_cache_file, save_to_hdf
 from radis.lbl.labels import vib_lvl_name_hitran_class1, vib_lvl_name_hitran_class5
 from radis.misc.basics import all_in
 from radis.misc.debug import printdbg
@@ -220,16 +220,6 @@ class RovibParFuncCalculator(RovibPartitionFunction):
 
         if not mode in ["full summation", "tabulation"]:
             raise ValueError("Choose mode = one of 'full summation', 'tabulation'")
-
-        # vaex processes are stuck if ran from Spyder. See https://github.com/spyder-ide/spyder/issues/16183
-        from os import environ
-
-        if mode == "tabulation" and any("SPYDER" in name for name in environ):
-            from radis.misc.log import printwarn
-
-            printwarn(
-                "Spyder IDE detected while using parsum_mode='tabulation', which depends on `vaex`. This is the fastest way to compute partition functions, but Vaex processes may be stuck if ran from Spyder. See https://github.com/radis/radis/issues/338. Quick fix: starting a new console releases the lock, usually for the rest of your session. You may consider using another IDE, or use `parsum_mode='full summation'` for the moment (note: starting another iPython console somehow releases the freeze in Spyder) \n"
-            )
 
         self.mode = mode
         self._tab_at = None  # tabulated function
@@ -1109,6 +1099,25 @@ class PartFuncExoMol(RovibParFuncTabulator):
     ----------
     name: str
         exomol isotope full name
+    T_range, Q_range: array
+        initial references values to be tabulated.
+
+    Examples
+    --------
+
+    One can use :py:func:`~radis.io.exomol.fetch_exomol` which has the option to
+    return a :py:class:`~radis.levels.partfunc.PartFuncExoMol` object ::
+
+        from radis.io.exomol import fetch_exomol
+        from radis.api.exomolapi import get_exomol_database_list
+
+        print(get_exomol_database_list("SiO", "28Si-16O"))  # 'EBJT" is one database
+        _, _, Z_exomol = fetch_exomol("SiO", "EBJT", return_local_path=True, return_partition_function=True)
+
+
+        # Get temperature at 2000 K
+        print(Z_exomol.at(2000))
+
 
     See Also
     --------
@@ -1154,6 +1163,8 @@ class PartFuncTIPS(RovibParFuncTabulator):
         print(Q.at(T=1500))
 
     See :ref:`online examples <label_examples_partition_functions>` for more.
+
+    .. minigallery:: radis.levels.partfunc.PartFuncTIPS
 
     References
     ----------
@@ -1234,6 +1245,25 @@ class PartFuncTIPS(RovibParFuncTabulator):
                     + f"Max range : {str(err)}"
                     + tip
                 )
+            elif isinstance(err, KeyError):
+                molecule = self.molecule
+                # In current version, GEISA parser uses HAPI partition function, which does not
+                # support some of GEISA's isotopes, as listed in GEISA_nw_iso below:
+                GEISA_ns_iso = {
+                    "CO2": [0],
+                    "H2O": [8, 9],
+                    "N2O": [0],
+                    "NO2": [2],
+                }
+                raise KeyError(
+                    "KeyError spotted! "
+                    + f"If you are computing GEISA spectra, this result might be because of an "
+                    + f"unsupported isotope. Currently isotope ID {GEISA_ns_iso[molecule]} "
+                    + f"of molecule {molecule} is not supported by HAPI partitional function, "
+                    + "thus stopping this spectrum calculation. Please select other isotopes "
+                    + "lists such as isotope='1,2,3'."
+                ) from err
+
             else:
                 raise
 
@@ -1319,6 +1349,7 @@ class PartFunc_Dunham(RovibParFuncCalculator):
     Examples
     --------
     Calculate partition function of CO using default spectroscopic constants::
+
         from radis.db.molecules import Molecules
         from radis.levels.partfunc import PartFunc_Dunham
 
@@ -1543,7 +1574,7 @@ class PartFunc_Dunham(RovibParFuncCalculator):
     def build_energy_levels_class1(self):  # , ZPE=0):
         """in the case where only Ediss is given. Deal with vmax, Jmax later.
 
-        Applies to molecules in :data:`~radis.io.hitran.HITRAN_CLASS1`
+        Applies to molecules in :data:`~radis.api.hitranapi.HITRAN_CLASS1`
 
         Returns
         -------
@@ -1680,7 +1711,7 @@ class PartFunc_Dunham(RovibParFuncCalculator):
     ):
         """in the case where only Ediss is given. Deal with vmax, Jmax later.
 
-        :data:`~radis.io.hitran.HITRAN_CLASS5` = ['CO2']
+        :data:`~radis.api.hitranapi.HITRAN_CLASS5` = ['CO2']
         # Linear triatomic with large Fermi resonance
 
         Parameters

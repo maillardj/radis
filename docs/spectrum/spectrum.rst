@@ -338,6 +338,11 @@ method to retrieve the quantity un the units you want::
     _, R = s.get('radiance_noslit', wunit='nm', Iunit='W/cm2/sr/nm',
                  medium='air')
 
+Use with `return_units` to get dimensioned Astropy Quantities ::
+
+    w, R  = s.get('radiance_noslit', return_units=True)
+    # w, R are astropy quantities
+
 See :ref:`spectral arrays <label_spectral _arrays>` for the list
 of spectral arrays.
 
@@ -372,6 +377,41 @@ You can also show the conditions only with
 
 .. _label_spectrum_plot:
 
+Plotting
+    -----
+
+    The `plot` method can be used to visualize the resulting spectrum. Available plot types are:
+
+    - 'absorption': plot absorption coefficient vs. wavenumber
+    - 'transmittance': plot transmittance vs. wavenumber
+    - 'radiance': plot radiance vs. wavenumber
+    - 'intensity': plot spectral intensity vs. wavenumber
+    - 'lines': plot individual spectral lines
+
+    Each plot type also has additional optional parameters that can be passed to `plot_options`.
+
+    Parameters
+    ----------
+    var : str, optional
+        The type of plot to generate. Defaults to 'absorption'.
+        Valid options are 'absorption', 'transmittance', 'radiance', 'intensity', and 'lines'.
+    plot_options : dict, optional
+        A dictionary of additional plot options. Valid keys and their descriptions are:
+
+        - 'figsize' : (width, height) tuple in inches for the plot figure size. Defaults to (10, 6).
+        - 'xlim' : (xmin, xmax) tuple in cm-1 for the x-axis limits. Defaults to (0, 5000).
+        - 'ylim' : (ymin, ymax) tuple for the y-axis limits. Defaults to 'auto'.
+        - 'linewidth' : float value for the line width. Defaults to 1.0.
+        - 'color' : string or tuple value for the line color. Defaults to 'k'.
+        - 'title' : string value for the plot title. Defaults to an automatically generated title.
+        - 'xlabel' : string value for the x-axis label. Defaults to 'Wavenumber (cm$^{-1}$)'.
+        - 'ylabel' : string value for the y-axis label. Defaults to 'Absorption Coefficient (cm$^{-1}$/(molecule cm$^{-2}$))' for 'absorption' plots,
+                      'Transmittance' for 'transmittance' plots,
+                      'Radiance (W/(cm$^{-1}$ sr))' for 'radiance' plots,
+                      'Spectral Intensity (W/(cm$^{-1}$ sr))' for 'intensity' plots.
+
+    def plot(self, var ='absorption', plot_options=None):
+
 Plot spectral arrays
 --------------------
 
@@ -389,10 +429,13 @@ But for comparing different spectra you may want to use
 Plot populations
 ----------------
 
-Use :py:meth:`~radis.spectrum.spectrum.Spectrum.plot_populations`::
+Get or plot populations computed in calculations.
+Use :py:meth:`~radis.spectrum.spectrum.Spectrum.get_populations`
+or :py:meth:`~radis.spectrum.spectrum.Spectrum.plot_populations`::
 
     s.plot_populations('vib', nunit='cm-3')
 
+.. minigallery:: radis.spectrum.spectrum.Spectrum.get_populations
 
 .. _label_spectrum_linesurvey:
 
@@ -642,21 +685,9 @@ and :py:func:`~radis.los.slabs.MergeSlabs` (``//``)
 
 Most of these functions will only work if there is only one
 `spectral arrays <https://radis.readthedocs.io/en/latest/spectrum/spectrum.html#spectral-quantities>`__
-defined in the Spectrum. If there is any ambiguity, the following
-functions can be used to discard all but one spectral arrays:
-
-- :py:func:`~radis.spectrum.operations.Transmittance`
-- :py:func:`~radis.spectrum.operations.Transmittance_noslit`
-- :py:func:`~radis.spectrum.operations.Radiance`
-- :py:func:`~radis.spectrum.operations.Radiance_noslit`
-
-For instance, the following line is a valid RADIS command to plot
+defined in the Spectrum. If there is any ambiguity, use the :py:meth:`~radis.spectrum.spectrum.Spectrum.take`
+method. For instance, the following line is a valid RADIS command to plot
 the spectral radiance of a spectrum with a low resolution::
-
-    (10*Radiance(s.apply_slit(10, 'nm'))).plot()
-
-The same can be achieved with the :py:meth:`~radis.spectrum.spectrum.Spectrum.take`
-method, which returns the spectrum with only one spectral arrays::
 
     (10*(s.apply_slit(10, 'nm')).take('radiance')).plot()
 
@@ -693,6 +724,10 @@ so they can be used directly with::
 
 By default, using methods that will modify the object in place, using the functions will
 generate a new Spectrum.
+
+
+.. minigallery:: radis.Spectrum.crop
+
 
 Normalize
 ---------

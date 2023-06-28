@@ -91,16 +91,16 @@ from radis.db.classes import get_molecule, get_molecule_identifier
 
 try:  # Proper import
     from .bands import BandFactory
-    from .base import get_waverange
+    from .base import get_wavenumber_range
 except ImportError:  # if ran from here
     from radis.lbl.bands import BandFactory
-    from radis.lbl.base import get_waverange
+    from radis.lbl.base import get_wavenumber_range
 
 from radis.misc.basics import flatten, is_float, is_range, list_if_float, round_off
 from radis.misc.utils import Default
 from radis.phys.constants import k_b
 from radis.phys.convert import conv2
-from radis.phys.units import convert_emi2nm, convert_rad2nm
+from radis.phys.units import convert_universal
 from radis.phys.units_astropy import convert_and_strip_units
 from radis.spectrum.equations import calc_radiance
 from radis.spectrum.spectrum import Spectrum
@@ -155,6 +155,9 @@ class SpectrumFactory(BandFactory):
     medium: ``'air'``, ``'vacuum'``
         propagating medium when giving inputs with ``'wavenum_min'``, ``'wavenum_max'``.
         Does not change anything when giving inputs in wavenumber. Default ``'air'``
+    diluent: ``str`` or ``dictionary``
+            can be a string of a single diluent or a dictionary containing diluent
+            name as key and its mole_fraction as value. Default ``air``.
 
     Other Parameters
     ----------------
@@ -398,6 +401,7 @@ class SpectrumFactory(BandFactory):
         export_populations=None,
         export_lines=False,
         emulate_gpu=False,
+        diluent="air",
         **kwargs,
     ):
 
@@ -459,7 +463,7 @@ class SpectrumFactory(BandFactory):
         # --------------------
 
         # Get wavenumber, based on whatever was given as input.
-        wavenum_min, wavenum_max = get_waverange(
+        wavenum_min, wavenum_max, input_wunit = get_wavenumber_range(
             wmin,
             wmax,
             wunit,
@@ -468,7 +472,12 @@ class SpectrumFactory(BandFactory):
             wavelength_min,
             wavelength_max,
             medium,
+            return_input_wunit=True,
         )
+        # ... Make default Spectrum's output unit consistent with the input waverange
+        # ... see https://github.com/radis/radis/issues/456
+        # (note: may be overwritten by user after Factory creation)
+        self.input_wunit = input_wunit
 
         # Storing inital value of wstep if wstep != "auto"
         self._wstep = wstep
@@ -509,6 +518,16 @@ class SpectrumFactory(BandFactory):
         if not isinstance(isotope, str):
             isotope = ",".join([str(k) for k in list_if_float(isotope)])
 
+        # If molecule present in diluent, raise error
+        if (isinstance(diluent, str) and diluent == molecule) or (
+            isinstance(diluent, dict) and molecule in diluent.keys()
+        ):
+            raise KeyError(
+                "{0} is being called as molecule and diluent, please remove it from diluent.".format(
+                    molecule
+                )
+            )
+
         # Initialize input conditions
         self.input.wavenum_min = wavenum_min
         self.input.wavenum_max = wavenum_max
@@ -530,6 +549,8 @@ class SpectrumFactory(BandFactory):
         # Initialize computation variables
         self.params.wstep = wstep
         self.params.pseudo_continuum_threshold = pseudo_continuum_threshold
+        self.params.diluent = diluent
+        self._diluent = None
 
         if cutoff is None:
             # If None, use no cutoff : https://github.com/radis/radis/pull/259
@@ -542,7 +563,13 @@ class SpectrumFactory(BandFactory):
 
         if truncation == 0:
             raise ValueError(
-                "Lineshape truncation must be >0. If you want no truncation (compute lineshape on the full spectral range), use `truncation=None`"
+                "Lineshape truncation must be > 0. If you want no truncation (compute lineshape on the full spectral range), use `truncation=None`. \nNote (advanced) : no truncation is not physically more accurate. Most molecules exhibit a sub-lorentzian behavior far from the line centers. A truncation at around 40-50 cm-1 is a good choice"
+            )
+        elif (
+            truncation is not None and not isinstance(truncation, Default)
+        ) and truncation < 0:
+            raise ValueError(
+                "Lineshape truncation can't be negative. Truncation must be > 0 or None to compute lineshape on the full spectral range"
             )
 
         self.misc.export_lines = export_lines
@@ -551,11 +578,19 @@ class SpectrumFactory(BandFactory):
         if broadening_method == "fft":
             if isinstance(truncation, Default):
                 truncation = None
-            else:
-                if broadening_method == "fft":
-                    raise NotImplementedError(
-                        "Lines cannot be truncated with `broadening_method='fft'`. Use `broadening_method='voigt'`"
-                    )
+            elif truncation is not None and broadening_method == "fft":
+                raise NotImplementedError(
+                    "Lines cannot be truncated with `broadening_method='fft'`. Use `broadening_method='voigt'`"
+                )
+        elif (
+            broadening_method == "voigt"
+            and truncation is None
+            and optimization is not None
+        ):
+            raise NotImplementedError(
+                "Currently `broadening_method='voigt'` doesn't support computation of lineshape on the full spectral range, use `broadening_method='fft'` instead or use a truncation value > 0"
+            )
+
         if isinstance(truncation, Default):
             truncation = truncation.value
 
@@ -629,7 +664,13 @@ class SpectrumFactory(BandFactory):
     # XXX =====================================================================
 
     def eq_spectrum(
-        self, Tgas, mole_fraction=None, path_length=None, pressure=None, name=None
+        self,
+        Tgas,
+        mole_fraction=None,
+        path_length=None,
+        diluent=None,
+        pressure=None,
+        name=None,
     ) -> Spectrum:
         """Generate a spectrum at equilibrium.
 
@@ -639,6 +680,9 @@ class SpectrumFactory(BandFactory):
             Gas temperature (K)
         mole_fraction: float
             database species mole fraction. If None, Factory mole fraction is used.
+        diluent: str or dictionary
+            can be a string of a single diluent or a dictionary containing diluent
+            name as key and its mole_fraction as value
         path_length: float or `~astropy.units.quantity.Quantity`
             slab size (cm). If ``None``, the default Factory
             :py:attr:`~radis.lbl.factory.SpectrumFactor.input.path_length` is used.
@@ -686,7 +730,6 @@ class SpectrumFactory(BandFactory):
         --------
         :meth:`~radis.lbl.factory.SpectrumFactory.non_eq_spectrum`
         """
-
         # %% Preprocessing
         # --------------------------------------------------------------------
 
@@ -745,9 +788,6 @@ class SpectrumFactory(BandFactory):
         self.profiler.start("spectrum_calculation", 1)
         self.profiler.start("spectrum_calc_before_obj", 2)
 
-        if verbose:
-            self.print_conditions("Calculating Equilibrium Spectrum")
-
         # Check database, reset populations, create line dataframe to be scaled
         # --------------------------------------------------------------------
         self._check_line_databank()
@@ -766,6 +806,9 @@ class SpectrumFactory(BandFactory):
 
         # ----------------------------------------------------------------------
         # Line broadening
+
+        # ... generates molefraction for diluents
+        self._generate_diluent_molefraction(mole_fraction, diluent)
 
         # ... calculate broadening  HWHM
         self._calc_broadening_HWHM()
@@ -806,6 +849,7 @@ class SpectrumFactory(BandFactory):
         radiance_noslit = calc_radiance(
             wavenumber, emissivity_noslit, Tgas, unit=self.units["radiance_noslit"]
         )
+        assert self.units["abscoeff"] == "cm-1"
 
         self.profiler.stop(
             "calc_other_spectral_quan", "Calculated other spectral quantities"
@@ -817,6 +861,10 @@ class SpectrumFactory(BandFactory):
         self.profiler.stop(
             "spectrum_calc_before_obj", "Spectrum calculated (before object generation)"
         )
+
+        if verbose:  # if wstep='auto' must be after wstep is calculated
+            self.print_conditions("Calculating Equilibrium Spectrum")
+
         self.profiler.start("generate_spectrum_obj", 2)
 
         # Get conditions
@@ -830,6 +878,7 @@ class SpectrumFactory(BandFactory):
                 "lines_cutoff": self._Nlines_cutoff,
                 "lines_in_continuum": self._Nlines_in_continuum,
                 "thermal_equilibrium": True,
+                "diluents": self._diluent,
                 "radis_version": version,
                 "spectral_points": (
                     self.params.wavenum_max_calc - self.params.wavenum_min_calc
@@ -859,17 +908,16 @@ class SpectrumFactory(BandFactory):
 
         # Spectral quantities
         quantities = {
-            "abscoeff": (wavenumber, abscoeff),
-            "absorbance": (wavenumber, absorbance),
-            "emissivity_noslit": (wavenumber, emissivity_noslit),
-            "transmittance_noslit": (wavenumber, transmittance_noslit),
-            # (mW/cm2/sr/nm)
-            "radiance_noslit": (wavenumber, radiance_noslit),
+            "wavenumber": wavenumber,
+            "abscoeff": abscoeff,
+            "absorbance": absorbance,
+            "emissivity_noslit": emissivity_noslit,
+            "transmittance_noslit": transmittance_noslit,
+            "radiance_noslit": radiance_noslit,
         }
         if I_continuum is not None and self._export_continuum:
-            quantities.update(
-                {"abscoeff_continuum": (wavenumber, I_continuum * density)}
-            )
+            quantities.update({"abscoeff_continuum": I_continuum * density})
+        conditions["default_output_unit"] = self.input_wunit
 
         # Store results in Spectrum class
         s = Spectrum(
@@ -879,13 +927,13 @@ class SpectrumFactory(BandFactory):
             lines=lines,
             units=self.units,
             cond_units=self.cond_units,
-            wunit=self.params.waveunit,  # cm-1
             # dont check input (much faster, and Spectrum
-            check_wavespace=False,
             # is freshly baken so probably in a good format
+            check_wavespace=False,
             name=name,
             references=dict(self.reftracker),
         )
+        # OPTION 2.  Change a posteriori using a Spectrum.method. More universal. Can it be slower?
 
         # update database if asked so
         if self.autoupdatedatabase:
@@ -906,6 +954,7 @@ class SpectrumFactory(BandFactory):
         self,
         Tgas,
         mole_fraction=None,
+        diluent=None,
         path_length=None,
         pressure=None,
         name=None,
@@ -917,7 +966,7 @@ class SpectrumFactory(BandFactory):
         .. note::
             This method requires CUDA compatible hardware to execute.
             For more information on how to setup your system to run GPU-accelerated methods
-            using CUDA and Cython, check `GPU Spectrum Calculation on RADIS <https://radis.readthedocs.io/en/latest/lbl/gpu.html>`
+            using CUDA and Cython, check :ref:`GPU Spectrum Calculation on RADIS <label_radis_gpu>`
 
         Parameters
         ----------
@@ -1041,11 +1090,12 @@ class SpectrumFactory(BandFactory):
         molarmass_arr = np.empty_like(
             iso_list, dtype=np.float32
         )  # molar mass of each isotope
+
         Q_interp_list = []
         for iso in iso_list:
             if iso in iso_set:
                 params = molpar.df.loc[(mol_id, iso)]
-                molarmass_arr[iso] = params.mol_mass
+                molarmass_arr[iso] = params.molar_mass
                 parsum = self.get_partition_function_interpolator(molecule, iso, state)
                 Q_interp_list.append(parsum.at)
             else:
@@ -1065,8 +1115,13 @@ class SpectrumFactory(BandFactory):
 
         # load the data
         df = self.df0
-        iso = df["iso"].to_numpy(dtype=np.uint8)
         v0 = df["wav"].to_numpy(dtype=np.float32)
+
+        if len(iso_set) > 1:
+            iso = df["iso"].to_numpy(dtype=np.uint8)
+        elif len(iso_set) == 1:
+            iso = np.full(len(v0), iso_set[0], dtype=np.uint8)
+
         da = df["Pshft"].to_numpy(dtype=np.float32)
         El = df["El"].to_numpy(dtype=np.float32)
         na = df["Tdpair"].to_numpy(dtype=np.float32)
@@ -1142,6 +1197,7 @@ class SpectrumFactory(BandFactory):
         radiance_noslit = calc_radiance(
             wavenumber, emissivity_noslit, Tgas, unit=self.units["radiance_noslit"]
         )
+        assert self.units["abscoeff"] == "cm-1"
 
         self.profiler.stop(
             "calc_other_spectral_quan", "Calculated other spectral quantities"
@@ -1167,6 +1223,7 @@ class SpectrumFactory(BandFactory):
                 ],
                 "lines_calculated": _Nlines_calculated,
                 "thermal_equilibrium": True,
+                "diluents": self._diluent,
                 "radis_version": version,
                 "emulate_gpu": emulate,
                 "spectral_points": (
@@ -1189,15 +1246,16 @@ class SpectrumFactory(BandFactory):
 
         # Spectral quantities
         quantities = {
-            "abscoeff": (wavenumber, abscoeff),
-            "absorbance": (wavenumber, absorbance),
-            "emissivity": (wavenumber, emissivity),
-            "emissivity_noslit": (wavenumber, emissivity_noslit),
-            "transmittance_noslit": (wavenumber, transmittance_noslit),
-            # (mW/cm2/sr/nm)
-            "radiance_noslit": (wavenumber, radiance_noslit),
-            "transmittance": (wavenumber, transmittance),
+            "wavenumber": wavenumber,
+            "abscoeff": abscoeff,
+            "absorbance": absorbance,
+            "emissivity": emissivity,
+            "emissivity_noslit": emissivity_noslit,
+            "transmittance_noslit": transmittance_noslit,
+            "radiance_noslit": radiance_noslit,
+            "transmittance": transmittance,
         }
+        conditions["default_output_unit"] = self.input_wunit
 
         # Store results in Spectrum class
         s = Spectrum(
@@ -1206,7 +1264,6 @@ class SpectrumFactory(BandFactory):
             conditions=conditions,
             lines=lines,
             cond_units=self.cond_units,
-            wunit=self.params.waveunit,  # cm-1
             # dont check input (much faster, and Spectrum
             check_wavespace=False,
             # is freshly baken so probably in a good format
@@ -1321,6 +1378,13 @@ class SpectrumFactory(BandFactory):
         fig = line.figure
 
         def update_plot(val):
+            # TODO : refactor this function and the update() mechanism. Ensure conditions are correct.
+            # Update conditions
+            # ... at equilibirum, temperatures remain equal :
+            s.conditions["Tvib"] = s.conditions["Tgas"]
+            s.conditions["Trot"] = s.conditions["Tgas"]
+            s.conditions["slit_function"] = s.conditions["slit_FWHM"]
+
             abscoeff, transmittance, iter_params = gpu_iterate(
                 s.conditions["pressure"],
                 s.conditions["Tgas"],
@@ -1331,46 +1395,21 @@ class SpectrumFactory(BandFactory):
                 gpu=(not s.conditions["emulate_gpu"]),
             )
 
-            # s._q["abscoeff"] = abscoeff
-            # s.update(var)    # adds required spectral array
-            # _, new_y = s.get(var)   # can also use wunits, Iunits, etc.
-
-            # TODO: the following should obviously be a self contained function..
-
-            if var == "abscoeff":
-                new_y = abscoeff
-            elif var == "transmittance":
-                new_y = transmittance
-            elif var in ["emissivity", "radiance"]:
-                emissivity = 1 - transmittance
-                if var == "emissivity":
-                    new_y = emissivity
-                else:  # var = 'radiance':
-                    new_y = calc_radiance(
-                        s.get_wavenumber(),
-                        emissivity,
-                        s.conditions["Tgas"],
-                        unit=self.units["radiance"],
-                    )
-            else:
-                absorbance = abscoeff * s.conditions["path_length"]
-                if var == "absorbance":
-                    new_y = absorbance
+            # This happen inside a Spectrum() method
+            for k in list(s._q.keys()):  # reset all quantities
+                if k in ["wavespace", "wavelength", "wavenumber"]:
+                    pass
+                elif k == "abscoeff":
+                    s._q["abscoeff"] = abscoeff
                 else:
-                    transmittance_noslit = exp(-absorbance)
-                    if var == "transmittance_noslit":
-                        new_y = transmittance_noslit
-                    else:
-                        emissivity_noslit = 1 - transmittance_noslit
-                        if var == "emissivity_noslit":
-                            new_y = emissivity_noslit
-                        else:
-                            new_y = calc_radiance(
-                                s.get_wavenumber(),
-                                emissivity_noslit,
-                                s.conditions["Tgas"],
-                                unit=self.units["radiance_noslit"],
-                            )
+                    del s._q[k]
+
+            _, new_y = s.get(
+                var,
+                copy=False,  # copy = False saves some time & memory, it's a pointer/reference to the real data, which is fine here as data is just plotted
+                wunit=plotkwargs.get("wunit", "default"),
+                Iunit=plotkwargs.get("Iunit", "default"),
+            )
 
             line.set_ydata(new_y)
             fig.canvas.draw_idle()
@@ -1403,6 +1442,7 @@ class SpectrumFactory(BandFactory):
         Ttrans=None,
         mole_fraction=None,
         path_length=None,
+        diluent=None,
         pressure=None,
         vib_distribution="boltzmann",
         rot_distribution="boltzmann",
@@ -1427,6 +1467,9 @@ class SpectrumFactory(BandFactory):
             which is the RT characteristic time)
         mole_fraction: float
             database species mole fraction. If None, Factory mole fraction is used.
+        diluent: str or dictionary
+            can be a string of a single diluent or a dictionary containing diluent
+            name as key and its mole_fraction as value
         path_length: float or `~astropy.units.quantity.Quantity`
             slab size (cm). If ``None``, the default Factory
             :py:attr:`~radis.lbl.factory.SpectrumFactor.input.path_length` is used.
@@ -1461,17 +1504,38 @@ class SpectrumFactory(BandFactory):
         Examples
         --------
         ::
+
             from radis import SpectrumFactory
             sf = SpectrumFactory(
             wavenum_min=2000,
             wavenum_max=3000,
             molecule="CO",
-            wstep=0.1,
+            isotope="1,2,3",
+            wstep="auto"
             )
-            sf.fetch_databank("hitemp")
+            sf.fetch_databank("hitemp", load_columns='noneq')
 
             s1 = sf.non_eq_spectrum(Tvib=2000, Trot=600, path_length=1, pressure=0.1)
             s2 = sf.non_eq_spectrum(Tvib=2000, Trot=600, path_length=1, pressure=0.1)
+
+        Multi-vibrational temperature. Below we compare non-LTE spectra of CO2 where all
+        vibrational temperatures are equal, or where the bending & symmetric modes are in
+        equilibrium with rotation ::
+
+            from radis import SpectrumFactory
+            sf = SpectrumFactory(
+            wavenum_min=2000,
+            wavenum_max=3000,
+            molecule="CO2",
+            isotope="1,2,3",
+            )
+            sf.fetch_databank("hitemp", load_columns='noneq')
+            # nonequilibrium between bending+symmetric and asymmetric modes :
+            s1 = sf.non_eq_spectrum(Tvib=(600, 600, 2000), Trot=600, path_length=1, pressure=1)
+            # all vibrational temperatures are equal :
+            s2 = sf.non_eq_spectrum(Tvib=(2000, 2000, 2000), Trot=600, path_length=1, pressure=1)
+
+
 
         .. minigallery:: radis.lbl.SpectrumFactory.non_eq_spectrum
             :add-heading:
@@ -1489,7 +1553,6 @@ class SpectrumFactory(BandFactory):
 
         # %% Preprocessing
         # --------------------------------------------------------------------
-
         # Convert units
         Tvib = convert_and_strip_units(Tvib, u.K)
         Trot = convert_and_strip_units(Trot, u.K)
@@ -1520,7 +1583,6 @@ class SpectrumFactory(BandFactory):
         self.input.overpopulation = overpopulation
         self.input.rot_distribution = rot_distribution
         self.input.vib_distribution = vib_distribution
-
         # Get translational temperature
         Tgas = Ttrans
         if Tgas is None:
@@ -1537,7 +1599,6 @@ class SpectrumFactory(BandFactory):
 
         # New Profiler object
         self._reset_profiler(verbose)
-
         # Check variables
         self._check_inputs(mole_fraction, max(flatten(Tgas, Tvib, Trot)))
 
@@ -1599,6 +1660,9 @@ class SpectrumFactory(BandFactory):
 
         # Line broadening
 
+        # ... generates molefraction for diluents
+        self._generate_diluent_molefraction(mole_fraction, diluent)
+
         # ... calculate broadening  HWHM
         self._calc_broadening_HWHM()
 
@@ -1631,9 +1695,6 @@ class SpectrumFactory(BandFactory):
         abscoeff = abscoeff_v * density  # cm-1
         emisscoeff = emisscoeff_v * density  # mW/sr/cm3/cm-1
 
-        # ... # TODO: if the code is extended to multi-species, then density has to be added
-        # ... before lineshape broadening (as it would not be constant for all species)
-
         # get absorbance (technically it's the optical depth `tau`,
         #                absorbance `A` being `A = tau/ln(10)` )
 
@@ -1652,16 +1713,27 @@ class SpectrumFactory(BandFactory):
             radiance_noslit[b] = emisscoeff[b] * path_length
         else:
             # Note that for k -> 0,
-            radiance_noslit = emisscoeff * path_length  # (mW/sr/cm2/cm-1)
+            radiance_noslit = emisscoeff * path_length  # (mW/cm2/sr/cm-1)
 
-        # Convert `radiance_noslit` from (mW/sr/cm2/cm-1) to (mW/sr/cm2/nm)
-        radiance_noslit = convert_rad2nm(
-            radiance_noslit, wavenumber, "mW/sr/cm2/cm-1", "mW/sr/cm2/nm"
+        # Convert `radiance_noslit` from (mW/sr/cm2/cm-1) to output unit
+        radiance_noslit = convert_universal(
+            radiance_noslit,
+            from_unit="mW/cm2/sr/cm-1",
+            to_unit=self.units["radiance_noslit"],
+            wavenum=wavenumber,
+            per_nm_is_like="mW/cm2/sr/nm",
+            per_cm_is_like="mW/cm2/sr/cm-1",
         )
-        # Convert 'emisscoeff' from (mW/sr/cm3/cm-1) to (mW/sr/cm3/nm)
-        emisscoeff = convert_emi2nm(
-            emisscoeff, wavenumber, "mW/sr/cm3/cm-1", "mW/sr/cm3/nm"
+        # Convert 'emisscoeff' from (mW/sr/cm3/cm-1) to output unit
+        emisscoeff = convert_universal(
+            emisscoeff,
+            from_unit="mW/cm3/sr/cm-1",
+            to_unit=self.units["emisscoeff"],
+            wavenum=wavenumber,
+            per_nm_is_like="mW/cm3/sr/nm",
+            per_cm_is_like="mW/cm3/sr/cm-1",
         )
+        assert self.units["abscoeff"] == "cm-1"
 
         self.profiler.stop(
             "calc_other_spectral_quan", "Calculated other spectral quantities"
@@ -1688,6 +1760,7 @@ class SpectrumFactory(BandFactory):
                 "lines_cutoff": self._Nlines_cutoff,
                 "lines_in_continuum": self._Nlines_in_continuum,
                 "thermal_equilibrium": False,  # dont even try to guess if it's at equilibrium
+                "diluents": self._diluent,
                 "radis_version": version,
                 "spectral_points": (
                     self.params.wavenum_max_calc - self.params.wavenum_min_calc
@@ -1715,21 +1788,21 @@ class SpectrumFactory(BandFactory):
 
         # Spectral quantities
         quantities = {
-            "abscoeff": (wavenumber, abscoeff),
-            "absorbance": (wavenumber, absorbance),
-            # (mW/cm3/sr/nm)
-            "emisscoeff": (wavenumber, emisscoeff),
-            "transmittance_noslit": (wavenumber, transmittance_noslit),
-            # (mW/cm2/sr/nm)
-            "radiance_noslit": (wavenumber, radiance_noslit),
+            "wavenumber": wavenumber,
+            "abscoeff": abscoeff,
+            "absorbance": absorbance,
+            "emisscoeff": emisscoeff,
+            "transmittance_noslit": transmittance_noslit,
+            "radiance_noslit": radiance_noslit,
         }
         if k_continuum is not None and self._export_continuum:
             quantities.update(
                 {
-                    "abscoeff_continuum": (wavenumber, k_continuum * density),
-                    "emisscoeff_continuum": (wavenumber, j_continuum * density),
+                    "abscoeff_continuum": k_continuum * density,
+                    "emisscoeff_continuum": j_continuum * density,
                 }
             )
+        conditions["default_output_unit"] = self.input_wunit
 
         # Store results in Spectrum class
         s = Spectrum(
@@ -1739,7 +1812,6 @@ class SpectrumFactory(BandFactory):
             lines=lines,
             units=self.units,
             cond_units=self.cond_units,
-            wunit=self.params.waveunit,  # cm-1
             # dont check input (much faster, and Spectrum
             check_wavespace=False,
             # is freshly baken so probably in a good format
@@ -1847,6 +1919,50 @@ class SpectrumFactory(BandFactory):
             assert (wavenumber_calc[woutrange[0] : woutrange[1]] == wavenumber).all()
 
         return
+
+    def _generate_diluent_molefraction(self, mole_fraction, diluent):
+        from radis.misc.warning import MoleFractionError
+
+        molecule = self.input.molecule
+        # Check if diluent is same as molecule or not
+        if (isinstance(diluent, str) and diluent == molecule) or (
+            isinstance(diluent, dict) and molecule in diluent.keys()
+        ):
+            raise KeyError(
+                "{0} is being called as molecule and diluent, please remove it from diluent.".format(
+                    molecule
+                )
+            )
+
+        # Using Spectrum Factory values of diluents
+        if diluent is None:
+            # If diluent is air, then add remaining molefraction as 'air'
+            if isinstance(self.params.diluent, str):
+                diluents = {self.params.diluent: 1 - mole_fraction}
+            else:
+                diluents = self.params.diluent.copy()
+        else:
+            if isinstance(diluent, str):
+                diluents = {diluent: 1 - mole_fraction}
+            else:
+                diluents = diluent.copy()
+
+        # Checking mole_fraction of molecule and diluent
+        total_mole_fraction = mole_fraction + sum(list(diluents.values()))
+        if total_mole_fraction > 1:
+            raise MoleFractionError(
+                "Total molefraction = {0} of molecule and diluents greater than 1. Please set appropriate molefraction value of molecule and diluents.".format(
+                    total_mole_fraction
+                )
+            )
+        elif total_mole_fraction < 1:
+            raise MoleFractionError(
+                "Total molefraction = {0} of molecule and diluents less than 1. Please set appropriate molefraction value of molecule and diluents".format(
+                    total_mole_fraction
+                )
+            )
+
+        self._diluent = diluents
 
     def predict_time(self):
         """predict_time(self) uses the input parameters like Spectral Range, Number of lines, wstep,
@@ -2304,10 +2420,14 @@ class SpectrumFactory(BandFactory):
 
     def generate_perf_profile(self):
         """Generate a visual/interactive performance profile diagram for
-        the last calculated spectrum
+        the last calculated spectrum, with ``tuna``.
 
-        .. note:
-            requires a `profiler` key with in Spectrum.conditions
+        Requires a `profiler` key with in Spectrum.conditions, and ``tuna``
+        installed.
+
+        .. note::
+            :py:meth:`~radis.spectrum.spectrum.Spectrum.print_perf_profile` is an
+            ascii-version which does not require ``tuna``.
 
         Examples
         --------
@@ -2385,6 +2505,7 @@ def _generate_wavenumber_range(wavenum_min, wavenum_max, wstep, neighbour_lines)
         on the final range `wavenumber`, i.e. : wavenumber_calc[woutrange[0]:woutrange[1]] = wavenumber
     """
     assert wavenum_min < wavenum_max
+    assert wstep > 0
 
     # Output range
     # generate the final vector of wavenumbers (shape M)

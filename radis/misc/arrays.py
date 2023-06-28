@@ -293,25 +293,56 @@ def centered_diff(w):
     return (hstack((dw, dw[-1])) + hstack((dw[0], dw))) / 2
 
 
-def evenly_distributed(w, tolerance=1e-5):
+def evenly_distributed(w, atolerance=1e-5):
     """Make sure array `w` is evenly distributed.
 
     Parameters
     ----------
-
     w : numpy array
         array to test
-    tolerance: float
+    atolerance: float
         absolute tolerance
 
     Returns
     -------
-
     out: bool
         ``True`` or ``False`` if ``w`` is evenly distributed.
+
+    See Also
+    --------
+    :py:func:`~radis.misc.arrays.evenly_distributed_fast`
     """
     mean_step = np.diff(w).mean()
-    return (np.abs((np.diff(w) - mean_step)) > tolerance).sum() == 0
+    return (np.abs((np.diff(w) - mean_step)) > atolerance).sum() == 0
+
+
+# TODO : rewrite so it works in one loop only ; Jit it
+
+
+def evenly_distributed_fast(w, rtolerance=1e-5):
+    """Make sure array `w` is evenly distributed, by looking only at the first
+    and last steps. i.e::
+
+        w[-1] - w[-2] == w[1] - w[0]
+
+    Parameters
+    ----------
+    w : numpy array
+        array to test
+    rtolerance: float
+        relative tolerance
+
+    Returns
+    -------
+    out: bool
+        ``True`` or ``False`` if ``w`` is evenly distributed.
+
+    See Also
+    --------
+    :py:func:`~radis.misc.arrays.evenly_distributed`
+    """
+
+    return np.isclose(w[-1] - w[-2], w[1] - w[0], rtol=rtolerance)
 
 
 def anynan(a):
@@ -476,6 +507,8 @@ try:
     import radis_cython_extensions as rcx
 except (ModuleNotFoundError, ValueError):
     add_at = numpy_add_at
+    """Wrapper to :py:func`radis.misc.arrays.numpy_add_at` or to the Radis
+    Cython version  (here, the numpy version was loaded)"""
     #  or use radis.misc.utils.NotInstalled() ?
 # EP: Also got (after switching back to former Cython version) :
 #     File "radis\cython\radis_cython_extensions.pyx", line 1, in init radis_cython_extensions

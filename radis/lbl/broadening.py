@@ -85,8 +85,6 @@ from radis.misc.basics import is_float
 from radis.misc.debug import printdbg
 from radis.misc.plot import fix_style, set_style
 from radis.misc.progress_bar import ProgressBar
-
-# from radis.misc.warning import AccuracyError, AccuracyWarning
 from radis.misc.warning import reset_warnings
 from radis.phys.constants import Na, c_CGS, k_b_CGS
 
@@ -248,7 +246,16 @@ def gaussian_FT(w_centered, hwhm):
 
 
 def pressure_broadening_HWHM(
-    airbrd, selbrd, Tdpair, Tdpsel, pressure_atm, mole_fraction, Tgas, Tref
+    airbrd,
+    selbrd,
+    Tdpair,
+    Tdpsel,
+    pressure_atm,
+    mole_fraction,
+    Tgas,
+    Tref,
+    diluent,
+    diluent_broadening_coeff,
 ):
     """Calculates collisional broadening HWHM over all lines by scaling
     tabulated HWHM for new pressure and mole fractions conditions [1]_
@@ -278,6 +285,11 @@ def pressure_broadening_HWHM(
     Tref: float [K]
         reference temperature at which tabulated HWHM pressure
         broadening coefficients were tabulated
+    diluent: dictionary
+        contains diluent and their mole fraction
+    diluent_broadening_coeff: dictionary
+        contains all non air diluents broadening coefficients
+
 
     Returns
     -------
@@ -314,15 +326,40 @@ def pressure_broadening_HWHM(
     # | dev note: in that case we simplify the expression by calculation the
     # | power function once only.
 
-    if Tdpsel is None:
-        gamma_lb = ((Tref / Tgas) ** Tdpair) * (
-            (airbrd * pressure_atm * (1 - mole_fraction))
-            + (selbrd * pressure_atm * mole_fraction)
+    # check if gamma_diluent and n_diluent exists or not and in case they are not present use broadening coefficient of air instead
+    gamma_lb = 0
+    for diluent_molecule, diluent_mole_fraction in diluent.items():
+        try:
+            gamma_lb += (
+                (Tref / Tgas)
+                ** diluent_broadening_coeff["n_" + diluent_molecule.lower()]
+            ) * (
+                diluent_broadening_coeff["gamma_" + diluent_molecule.lower()]
+                * pressure_atm
+                * diluent_mole_fraction
+            )
+        except KeyError:
+            # import warnings
+            # from radis.misc.warning import AccuracyWarning
+            # if diluent_molecule != "air":
+            #     warnings.warn(
+            #         AccuracyWarning(
+            #             "Broadening Coefficient of "+diluent_molecule+" not present in database using broadening coefficient of air instead. \n!!! Solution: Try using once `use_cached='regen'' in calc_spectrum!!!"
+            #         )
+            #     )
+
+            ## A warning is normally raised already in '_calc_broadening_HWHM' when constructing the dict diluent_broadening_coef
+            gamma_lb += ((Tref / Tgas) ** Tdpair) * (
+                (airbrd * pressure_atm * diluent["air"])
+            )
+    # Adding self coefficient
+    if Tdpsel is None:  # use Tdpair instead
+        gamma_lb += ((Tref / Tgas) ** Tdpair) * (
+            (selbrd * pressure_atm * mole_fraction)
         )
     else:
-        gamma_lb = ((Tref / Tgas) ** Tdpair) * (
-            airbrd * pressure_atm * (1 - mole_fraction)
-        ) + ((Tref / Tgas) ** Tdpsel) * (selbrd * pressure_atm * mole_fraction)
+        gamma_lb += ((Tref / Tgas) ** Tdpsel) * (selbrd * pressure_atm * mole_fraction)
+    # raise KeyError("Column not found {0}".format(err))
 
     return gamma_lb
 
@@ -365,7 +402,7 @@ def lorentzian_lineshape(w_centered, gamma_lb):
 
     # Calculate broadening
     # -------
-    lineshape = 1 / pi * gamma_lb / ((gamma_lb ** 2) + (w_centered ** 2))
+    lineshape = 1 / pi * gamma_lb / ((gamma_lb**2) + (w_centered**2))
 
     return lineshape
 
@@ -408,6 +445,8 @@ def voigt_broadening_HWHM(
     mole_fraction,
     Tgas,
     Tref,
+    diluent,
+    diluent_broadening_coeff,
 ):
     """Calculate Voigt profile half-width at half-maximum (HWHM) from the
     Gaussian and Collisional broadening with the empirical formula of [Olivero-1977]_
@@ -474,7 +513,16 @@ def voigt_broadening_HWHM(
 
     # Collisional broadening HWHM
     gamma_lb = pressure_broadening_HWHM(
-        airbrd, selbrd, Tdpair, Tdpsel, pressure_atm, mole_fraction, Tgas, Tref
+        airbrd,
+        selbrd,
+        Tdpair,
+        Tdpsel,
+        pressure_atm,
+        mole_fraction,
+        Tgas,
+        Tref,
+        diluent,
+        diluent_broadening_coeff,
     )
 
     # Doppler Broadening HWHM:
@@ -531,7 +579,7 @@ def olivero_1977(wg, wl):
     sd = (wl - wg) / (wl + wg)
     wv = (
         1
-        - 0.18121 * (1 - sd ** 2)
+        - 0.18121 * (1 - sd**2)
         - (0.023665 * exp(0.6 * sd) + 0.00418 * exp(-1.9 * sd)) * sin(pi * sd)
     ) * (wl + wg)
     return wv
@@ -665,7 +713,7 @@ def whiting1968(w_centered, wl, wv):
     # ... 20.5.s > 16.5s) on the total eq_spectrum calculation
     # ... w_wv is typically a (10.001, 1997) array
     w_wv = w_centered / wv  # w_centered can be ~500 Mb
-    w_wv_2 = w_wv ** 2
+    w_wv_2 = w_wv**2
     wl_wv = wl / wv
     w_wv_225 = np.abs(w_wv) ** 2.25
 
@@ -711,7 +759,7 @@ def _whiting_jit(w_centered, wl, wv):
     # ... w_wv is typically a (10.001, 1997) array
 
     w_wv = w_centered / wv  # w_centered can be ~500 Mb
-    w_wv_2 = w_wv ** 2
+    w_wv_2 = w_wv**2
     wl_wv = wl / wv
     w_wv_225 = np.abs(w_wv) ** 2.25
 
@@ -815,8 +863,10 @@ class BroadenFactory(BaseFactory):
 
         Run this method before using `_calc_lineshape`
         """
+
         # Init variables
         df = self.df1
+        diluent = self._diluent
 
         if len(df) == 0:
             return  # no lines
@@ -838,14 +888,45 @@ class BroadenFactory(BaseFactory):
             self.params.broadening_method
         )  # Lineshape broadening algorithm
 
+        # diluent and their broadening coeff dictionary
+        diluent_broadening_coeff = {}
+        for key in diluent:
+            try:
+                diluent_broadening_coeff["gamma_" + key.lower()] = df[
+                    "gamma_" + key.lower()
+                ]
+                diluent_broadening_coeff["n_" + key.lower()] = df["n_" + key.lower()]
+            except KeyError:
+                if key != "air":
+                    self.warn(
+                        message="Broadening Coefficient of "
+                        + key
+                        + " not present in database using broadening coefficient of air instead. \n!!! Solution: Try using once `use_cached='regen'' in calc_spectrum!!!",
+                        category="AccuracyWarning",
+                    )
+
         # Get broadenings
         if broadening_method == "voigt":
             # Adds hwhm_voigt, hwhm_gauss, hwhm_lorentz:
-            self._add_voigt_broadening_HWHM(df, pressure_atm, mole_fraction, Tgas, Tref)
+            self._add_voigt_broadening_HWHM(
+                df,
+                pressure_atm,
+                mole_fraction,
+                Tgas,
+                Tref,
+                diluent,
+                diluent_broadening_coeff,
+            )
         elif broadening_method in ["convolve", "fft"]:
             # Adds hwhm_lorentz:
             self._add_collisional_broadening_HWHM(
-                df, pressure_atm, mole_fraction, Tgas, Tref
+                df,
+                pressure_atm,
+                mole_fraction,
+                Tgas,
+                Tref,
+                diluent,
+                diluent_broadening_coeff,
             )
             # Add hwhm_gauss:
             self._add_doppler_broadening_HWHM(df, Tgas)
@@ -887,7 +968,7 @@ class BroadenFactory(BaseFactory):
             if less than `1` grid point per spectral line
 
         .. note::
-            Warning and Error treshold reduced from `5, 2`  to `3, 1` in 0.9.29,
+            Warning and Error threshold reduced from `5, 2`  to `3, 1` in 0.9.29,
             because some outlier lines with very small lineshapes would systematically
             raise an error. Suggestion : ignore outlier lines (1% smallest?) in normal/performance
             mode.
@@ -946,7 +1027,16 @@ class BroadenFactory(BaseFactory):
 
         return
 
-    def _add_voigt_broadening_HWHM(self, df, pressure_atm, mole_fraction, Tgas, Tref):
+    def _add_voigt_broadening_HWHM(
+        self,
+        df,
+        pressure_atm,
+        mole_fraction,
+        Tgas,
+        Tref,
+        diluent,
+        diluent_broadening_coeff,
+    ):
         """Update dataframe with Voigt HWHM.
 
         Returns
@@ -997,6 +1087,8 @@ class BroadenFactory(BaseFactory):
             mole_fraction,
             Tgas,
             Tref,
+            diluent,
+            diluent_broadening_coeff,
         )
 
         # Update dataframe
@@ -1007,7 +1099,14 @@ class BroadenFactory(BaseFactory):
         return
 
     def _add_collisional_broadening_HWHM(
-        self, df, pressure_atm, mole_fraction, Tgas, Tref
+        self,
+        df,
+        pressure_atm,
+        mole_fraction,
+        Tgas,
+        Tref,
+        diluent,
+        diluent_broadening_coeff,
     ):
         """Update dataframe with collisional HWHM [1]_
 
@@ -1063,10 +1162,14 @@ class BroadenFactory(BaseFactory):
             mole_fraction,
             Tgas,
             Tref,
+            diluent,
+            diluent_broadening_coeff,
         )
 
         # Update dataframe
         df["hwhm_lorentz"] = wl
+
+        #####
 
         return
 
@@ -1434,6 +1537,15 @@ class BroadenFactory(BaseFactory):
 
         def _init_w_axis(w_dat, log_p):
             w_min = w_dat.min()
+            if w_min == 0:
+                self.warn(
+                    f"{(w_dat==0).sum()}"
+                    + " line(s) had a calculated broadening of 0 cm-1. Check the database. At least this line is faulty: \n\n"
+                    + "{}".format(self.df1.iloc[(w_min == 0).argmax()])
+                    + "\n\nIf you want to ignore, use `warnings['ZeroBroadeningWarning'] = 'ignore'`",
+                    category="ZeroBroadeningWarning",
+                )
+                w_min = w_dat[w_dat > 0].min()
             w_max = (
                 w_dat.max() + 1e-4
             )  # Add small number to prevent w_max falling outside of the grid
@@ -1856,7 +1968,7 @@ class BroadenFactory(BaseFactory):
 
             R_Gv = 8 * np.log(2)
             R_GG = 2 - 1 / (C1_GG + C2_GG * alpha_i ** (2 / 1.50)) ** 1.50
-            R_GL = -2 * np.log(2) * alpha_i ** 2
+            R_GL = -2 * np.log(2) * alpha_i**2
 
             R_LL = 1
             R_LG = (
@@ -1869,13 +1981,13 @@ class BroadenFactory(BaseFactory):
             avi = tvi
 
             aGi = tGi + (
-                R_Gv * tvi * (tvi - 1) * dxvGi ** 2
-                + R_GG * tGi * (tGi - 1) * dxG ** 2
-                + R_GL * tLi * (tLi - 1) * dxL ** 2
+                R_Gv * tvi * (tvi - 1) * dxvGi**2
+                + R_GG * tGi * (tGi - 1) * dxG**2
+                + R_GL * tLi * (tLi - 1) * dxL**2
             ) / (2 * dxG)
 
             aLi = tLi + (
-                R_LG * tGi * (tGi - 1) * dxG ** 2 + R_LL * tLi * (tLi - 1) * dxL ** 2
+                R_LG * tGi * (tGi - 1) * dxG**2 + R_LL * tLi * (tLi - 1) * dxL**2
             ) / (2 * dxL)
 
         else:
@@ -1962,7 +2074,7 @@ class BroadenFactory(BaseFactory):
                 ::
                     LDM_ranges_00 = get_non_zero_wranges(groupby_parameters=["li0", "mi0"], max_range=len(wavenumber_calc))
                 """
-                # EP 31/10: the for loop over df.groupby is the current bottleneck
+                # EP 31/10/21: the for loop over df.groupby is the current bottleneck
                 # (not even the sparse_add_at function !)
                 dgb = df.groupby(groupby_parameters, sort=False)
                 LDM_ranges = {}
@@ -2126,6 +2238,53 @@ class BroadenFactory(BaseFactory):
             line dataframe
 
         See _calc_lineshape for more information
+
+        Examples
+        ----------
+        s = calc_spectrum(
+            2135,
+            2170,
+            molecule="CO",
+            isotope="1",
+            pressure=3,
+            Tgas=2000,
+            mole_fraction=0.1,
+            path_length=1,
+            databank="hitemp",
+            name="Chunksize=1e7",
+            chunksize=1e7,
+            optimization = "min-RMS",
+        )
+
+        Alternatively, you can also initialize a SpectrumFactory object and
+        include chunksize, as follows:
+
+        sf = SpectrumFactory(
+            wavelength_min=4000,
+            wavelength_max=4500,
+            cutoff=1e-27,
+            pressure=1,
+            isotope="1,2",
+            truncation=5,
+            neighbour_lines=5,
+            path_length=0.1,
+            mole_fraction=1e-3,
+            medium="vacuum",
+            optimization=None,
+            chunksize=1e7,
+            wstep=0.001,
+            verbose=False,
+        )
+        sf.load_databank("HITEMP-CO")
+
+        To plot:
+
+        s.plot("abscoeff")
+        plt.show()
+
+        To iterate over the entire dataframe at once (not recommended for large molecules
+        unless you have large RAM), just pass chunksize = None
+
         """
         # --------------------------
 
@@ -2145,56 +2304,93 @@ class BroadenFactory(BaseFactory):
             self.misc.zero_padding = len(self.wavenumber_calc)
 
         try:
-            if optimization in ("simple", "min-RMS"):
-                self.reftracker.add(doi["DIT-2020"], "algorithm")
-                # Use LDM
+            if chunksize is None:
+                # Deal with all lines directly (usually faster)
+                if optimization is None:
 
-                line_profile_LDM, wL, wG, wL_dat, wG_dat = self._calc_lineshape_LDM(df)
-                # printing estimated time
-                if self.verbose >= 2:
-                    estimated_time = self.predict_time()
-                    print(
-                        "Estimated time for calculating broadening: {0:.2f}s on 1 CPU".format(
-                            estimated_time
+                    # printing estimated time
+                    if self.verbose >= 2:
+                        estimated_time = self.predict_time()
+                        print(
+                            "Estimated time for calculating broadening: {0:.2f}s on 1 CPU".format(
+                                estimated_time
+                            )
                         )
-                    )
-                (wavenumber, abscoeff) = self._apply_lineshape_LDM(
-                    df.S.values,
-                    line_profile_LDM,
-                    df.shiftwav.values,
-                    wL,
-                    wG,
-                    wL_dat,
-                    wG_dat,
-                    self.params.optimization,
-                )
 
-            elif optimization is None:
-                # printing estimated time
-                if self.verbose >= 2:
-                    estimated_time = self.predict_time()
-                    print(
-                        "Estimated time for calculating broadening: {0:.2f}s on 1 CPU".format(
-                            estimated_time
-                        )
-                    )
-                if chunksize is None:
-
-                    # Deal with all lines directly (usually faster)
                     line_profile = self._calc_lineshape(df)  # usually the bottleneck
                     (wavenumber, abscoeff) = self._apply_lineshape(
                         df.S.values, line_profile, df.shiftwav.values
                     )
+                elif optimization in ("simple", "min-RMS"):
+                    self.reftracker.add(doi["DIT-2020"], "algorithm")
+                    (
+                        line_profile_LDM,
+                        wL,
+                        wG,
+                        wL_dat,
+                        wG_dat,
+                    ) = self._calc_lineshape_LDM(df)
 
-                elif is_float(chunksize):
-                    # Cut lines in smaller bits for better memory handling
-                    N = int(len(df) * len(wavenumber) / chunksize) + 1
-                    # Too big may be faster but overload memory.
-                    # See Performance for more information
+                    # printing estimated time
+                    if self.verbose >= 2:
+                        estimated_time = self.predict_time()
+                        print(
+                            "Estimated time for calculating broadening: {0:.2f}s on 1 CPU".format(
+                                estimated_time
+                            )
+                        )
 
-                    abscoeff = zeros_like(self.wavenumber)
+                    (wavenumber, abscoeff) = self._apply_lineshape_LDM(
+                        df.S.values,
+                        line_profile_LDM,
+                        df.shiftwav.values,
+                        wL,
+                        wG,
+                        wL_dat,
+                        wG_dat,
+                        self.params.optimization,
+                    )
+                else:
+                    raise ValueError(
+                        "Unexpected value for optimization: {0}".format(optimization)
+                    )
 
-                    pb = ProgressBar(N, active=self.verbose)
+            elif is_float(chunksize):
+                # Cut lines in smaller bits for better memory handling
+                N = int(len(df) * len(wavenumber) / chunksize) + 1
+                # Too big may be faster but overload memory.
+                # See Performance for more information
+
+                # Raise performance warning if the chunks are bigger
+                # than the number of lines.
+                if N >= len(df):
+                    self.warn(
+                        "We suggest increasing chunksize to"
+                        + " {0:.1e} - {1:.1e}".format(
+                            10000 * len(wavenumber), 100000 * len(wavenumber)
+                        )
+                        + " to speed up calculations. Currently, there are more chunks"
+                        + " ({0:.3e}) than lines ({1:.3e}).".format(N, len(df))
+                        + " Hence, calculation times will be extremely slow, since broadening will be"
+                        + " calculated using only one line per iteration. Ideally, 10,000 - 100,000"
+                        + " lines per chunk are recommended.",
+                        "PerformanceWarning",
+                    )
+
+                abscoeff = zeros_like(self.wavenumber)
+                pb = ProgressBar(N, active=self.verbose)
+
+                if optimization is None:
+
+                    # printing estimated time
+                    if self.verbose >= 2:
+                        estimated_time = self.predict_time()
+                        print(
+                            "Estimated time for calculating broadening: {0:.2f}s on 1 CPU".format(
+                                estimated_time
+                            )
+                        )
+
                     for i, (_, dg) in enumerate(df.groupby(arange(len(df)) % N)):
                         line_profile = self._calc_lineshape(dg)
                         (wavenumber, absorption) = self._apply_lineshape(
@@ -2203,14 +2399,41 @@ class BroadenFactory(BaseFactory):
                         abscoeff += absorption
                         pb.update(i)
                     pb.done()
+
+                elif optimization in ("simple", "min-RMS"):
+
+                    self.reftracker.add(doi["DIT-2020"], "algorithm")
+                    # Iterating over the chunks of the line database
+                    # Using DIT Algorithm calculations for optimized loops
+                    for i, (_, dg) in enumerate(df.groupby(arange(len(df)) % N)):
+                        (
+                            line_profile_LDM,
+                            wL_i,
+                            wG_i,
+                            wL_dat_i,
+                            wG_dat_i,
+                        ) = self._calc_lineshape_LDM(dg)
+                        (wavenumber, absorption) = self._apply_lineshape_LDM(
+                            dg.S.values,
+                            line_profile_LDM,
+                            dg.shiftwav.values,
+                            wL_i,
+                            wG_i,
+                            wL_dat_i,
+                            wG_dat_i,
+                            self.params.optimization,
+                        )
+                        abscoeff += absorption
+                        pb.update(i)
+                    pb.done()
                 else:
                     raise ValueError(
-                        "Unexpected value for chunksize: {0}".format(chunksize)
+                        "Unexpected value for optimization: {0}".format(optimization)
                     )
 
             else:
                 raise ValueError(
-                    "Unexpected value for optimization: {0}".format(optimization)
+                    "Unexpected value for chunksize: {0}".format(chunksize)
                 )
 
         except MemoryError as err:

@@ -5,8 +5,12 @@
 """
 # TODO refactor : rename this file as hitran_utils.py
 
+from warnings import warn
+
 import numpy as np
 import pandas as pd
+
+from ..misc.warning import PerformanceWarning
 
 
 def parse_hitran_file(fname, columns, count=-1):
@@ -16,9 +20,9 @@ def parse_hitran_file(fname, columns, count=-1):
     Parameters
     ----------
     fname: str
-        filename
+        filename.
     columns: dict
-        list of columns and their format
+        list of columns and their format.
 
     Other Parameters
     ----------------
@@ -28,11 +32,11 @@ def parse_hitran_file(fname, columns, count=-1):
     Returns
     -------
     df: pandas DataFrame
-        dataframe with lines
+        dataframe with lines.
 
     See Also
     --------
-    Used in :py:func:`~radis.io.hitran.hit2df` and :py:func:`~radis.io.cdsd.cdsd2df`
+    Used in :py:func:`~radis.api.hitranapi.hit2df` and :py:func:`~radis.api.cdsdapi.cdsd2df`
     """
 
     # To be faster, we read file totally in bytes mode with fromfiles. But that
@@ -158,7 +162,7 @@ def _format_dtype(dtype):
         try:
             print("Data type")
             print("-" * 30)
-            for (k, c) in dtype:
+            for k, c in dtype:
                 print(str(k), "\t\t", c)
             print("-" * 30)
         finally:
@@ -176,8 +180,8 @@ def _cast_to_dtype(data, dtype):
     data: array to cast
     dtype: (ordered) list of (param, type)
     """
-    dt = _format_dtype(dtype)
 
+    dt = _format_dtype(dtype)
     try:
         data = np.array(data, dtype=dt)
     except ValueError as err:
@@ -235,7 +239,8 @@ def replace_PQR_with_m101(df):
     ----------
 
     df: pandas Dataframe
-        ``branch`` must be a column name
+        ``branch`` must be a column name.
+
 
     Returns
     -------
@@ -250,4 +255,17 @@ def replace_PQR_with_m101(df):
         new_col = df["branch"].replace(["P", "Q", "R"], [-1, 0, 1])
         df["branch"] = new_col
 
-    assert df.dtypes["branch"] == np.int64
+    try:
+        assert df.dtypes["branch"] == np.int64
+    except AssertionError:
+        warn(
+            message=(
+                f"Expected branch data type to be 'int64', "
+                f"got '{df.dtypes['branch']}' instead."
+                f"This warning is safe to ignore although it is going to "
+                f"reduce the performance of your calculations. "
+                f"For further details, see:"
+                f"https://github.com/radis/radis/issues/65"
+            ),
+            category=PerformanceWarning,
+        )

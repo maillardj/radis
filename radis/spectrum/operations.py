@@ -72,6 +72,7 @@ from radis.phys.convert import (
     vacuum2air,
 )
 from radis.phys.units import Unit
+from radis.phys.units_astropy import convert_and_strip_units
 from radis.spectrum.spectrum import Spectrum
 
 # %% Filter Spectra
@@ -113,6 +114,9 @@ def Transmittance(s: Spectrum) -> Spectrum:
     :py:meth:`~radis.spectrum.Spectrum.take`
 
     """
+    warn(
+        "Transmittance(Spectrum) will be deprecated in future RADIS versions. Use Spectrum.take('transmittance')"
+    )
 
     return s.copy(copy_lines=True, quantity="transmittance")
 
@@ -152,6 +156,9 @@ def Transmittance_noslit(s: Spectrum) -> Spectrum:
     :py:meth:`~radis.spectrum.Spectrum.take`
 
     """
+    warn(
+        "Transmittance_noslit(Spectrum) will be deprecated in future RADIS versions. Use Spectrum.take('transmittance_noslit')"
+    )
 
     return s.copy(copy_lines=True, quantity="transmittance_noslit")
 
@@ -191,6 +198,9 @@ def Radiance(s: Spectrum) -> Spectrum:
     :py:meth:`~radis.spectrum.Spectrum.take`
 
     """
+    warn(
+        "Radiance(Spectrum) will be deprecated in future RADIS versions. Use Spectrum.take('radiance')"
+    )
 
     return s.copy(copy_lines=True, quantity="radiance")
 
@@ -230,6 +240,9 @@ def Radiance_noslit(s: Spectrum) -> Spectrum:
     :py:meth:`~radis.spectrum.Spectrum.take`
 
     """
+    warn(
+        "Radiance_noslit(Spectrum) will be deprecated in future RADIS versions. Use Spectrum.take('radiance_noslit')"
+    )
 
     return s.copy(copy_lines=True, quantity="radiance_noslit")
 
@@ -243,20 +256,13 @@ def PerfectAbsorber(s: Spectrum) -> Spectrum:
     Useful to get contribution of different slabs in line-of-sight
     calculations (see example).
 
-    .. note:
-
-        formerly named "Transmittance", but "Transmittance(s)" wouldnt
-        return the Transmittance exactly
-
     Parameters
     ----------
-
     s: Spectrum
         :class:`~radis.spectrum.spectrum.Spectrum` object
 
     Returns
     -------
-
     s_tr: Spectrum
         :class:`~radis.spectrum.spectrum.Spectrum` object, with only the ``transmittance``,
         ``absorbance`` and/or ``abscoeff`` part of ``s``, where ``radiance_noslit`` ,
@@ -264,7 +270,6 @@ def PerfectAbsorber(s: Spectrum) -> Spectrum:
 
     Examples
     --------
-
     Let's say you have a total line of sight::
 
         s_los = s1 > s2 > s3
@@ -279,7 +284,6 @@ def PerfectAbsorber(s: Spectrum) -> Spectrum:
         (s1 > PerfectAbsorber(s2>s3)).plot('radiance_noslit')
 
     See more examples in :ref:`Line-of-Sight module <label_los_index>`
-
     """
 
     s_tr = s.copy()
@@ -308,10 +312,8 @@ def crop(s: Spectrum, wmin=None, wmax=None, wunit=None, inplace=False) -> Spectr
 
     Parameters
     ----------
-
     s: Spectrum object
         object to crop
-
     wmin, wmax: float, or None
         boundaries of spectral range (in ``wunit``)
 
@@ -322,36 +324,62 @@ def crop(s: Spectrum, wmin=None, wmax=None, wunit=None, inplace=False) -> Spectr
 
     Other Parameters
     ----------------
-
     inplace: bool
         if ``True``, modifiy ``s`` directly. Else, returns a copy.
 
     Returns
     -------
-
     s_crop: Spectrum
         a cropped Spectrum.
         if using ``inplace``, then ``s_crop`` and ``s`` are still the same object
 
     Examples
     --------
-
     ::
 
         crop(s, 420, 480, 'nm', 'air')
-
     Or in ``cm-1``::
 
         crop(s, 2000, 2300, 'cm-1')
-
     """
 
+    stored_waveunit = s.get_waveunit()
+
+    wlunit_list = {
+        "km": u.km,
+        "m": u.m,
+        "cm": u.cm,
+        "mm": u.mm,
+        "um": u.um,
+    }
+
     # Check inputs
+
     if wmin is None and wmax is None:
         raise ValueError("Choose at least `wmin=` or `wmax=`")
+
+    if (
+        type(wmin) == type(wmax) == u.quantity.Quantity
+    ):  # User states astropy units directly to wmin and wmax
+        # Convert wmin and wmax to nm unit for later Spectrum wavespace conversion
+        # The stored waveunit can only be nm or cm-1, but we don't need to deal with wavenumber unit conversion, only wavelength
+        # So I convert them all to nm
+        wmin = convert_and_strip_units(wmin, u.nm)
+        wmax = convert_and_strip_units(wmax, u.nm)
+
     if wunit is None:
         raise ValueError("Please precise unit for wmin and wmax with `unit=`")
-    assert wunit in ["nm", "cm-1"]
+    elif wunit not in ["nm", "cm-1"]:
+        if wunit in wlunit_list:
+            wmin = convert_and_strip_units(wmin * wlunit_list[wunit], u.nm)
+            wmax = convert_and_strip_units(wmax * wlunit_list[wunit], u.nm)
+            wunit = "nm"
+        else:
+            raise ValueError(
+                f"Unsupported wunit, should be cm-1, nm or {wlunit_list.keys}"
+            )
+    # assert wunit in ["nm", "cm-1"]
+
     if (wmin is not None and wmax is not None) and wmin >= wmax:
         raise ValueError(
             "wmin should be < wmax (Got: {0:.2f}, {1:.2f})".format(wmin, wmax)
@@ -363,7 +391,6 @@ def crop(s: Spectrum, wmin=None, wmax=None, wunit=None, inplace=False) -> Spectr
     # Convert wmin, wmax to Spectrum wavespace  (stored_waveunit)
     # (deal with cases where wavelength are given in 'air' or 'vacuum')
     # TODO @dev: rewrite with wunit='cm-1', 'nm_air', 'nm_vac'
-    stored_waveunit = s.get_waveunit()
     wmin0, wmax0 = wmin, wmax
     if stored_waveunit == "cm-1":
         # convert wmin, wmax to wavenumber
@@ -492,7 +519,7 @@ def multiply(s, coef, unit=None, var=None, inplace=False):
         s = s.copy(quantity=var)
 
     # Multiply inplace       ( @dev: we have copied already if needed )
-    w, I = s.get(var, wunit=s.get_waveunit(), copy=False)
+    w, I = s.get(var, wunit=s.get_waveunit(), Iunit=s.units[var], copy=False)
     I *= coef  # @dev: updates the Spectrum directly because of copy=False
 
     # Convert Spectrum unit
@@ -555,7 +582,7 @@ def add_constant(s, cst, unit=None, var=None, inplace=False):
         s = s.copy(quantity=var)
 
     # Add inplace       ( @dev: we have copied already if needed )
-    w, I = s.get(var, wunit=s.get_waveunit(), copy=False)
+    w, I = s.get(var, wunit=s.get_waveunit(), Iunit=s.units[var], copy=False)
     I += cst
     # @dev: updates the Spectrum directly because of copy=False
 
@@ -631,7 +658,7 @@ def add_array(s, a, unit=None, var=None, inplace=False):
         s = s.copy(quantity=var)
 
     # Add inplace       ( @dev: we have copied already if needed )
-    w, I = s.get(var, wunit=s.get_waveunit(), copy=False)
+    w, I = s.get(var, wunit=s.get_waveunit(), Iunit=s.units[var], copy=False)
     I += a
     # @dev: updates the Spectrum directly because of copy=False
 
@@ -715,10 +742,8 @@ def sub_baseline(s, left, right, unit=None, var=None, inplace=False):
     if not inplace:
         s = s.copy(quantity=var)
 
-    # @EP:
-
     # Substract inplace       ( @dev: we have copied already if needed )
-    w, I = s.get(var, wunit=s.get_waveunit(), copy=False)
+    w, I = s.get(var, wunit=s.get_waveunit(), Iunit=s.units[var], copy=False)
     I -= np.linspace(left, right, num=np.size(I))
     # @dev: updates the Spectrum directly because of copy=False
 
@@ -797,7 +822,7 @@ def add_spectra(s1, s2, var=None, force=False):
 
     name = s1.get_name() + "+" + s2.get_name()
 
-    sub = Spectrum.from_array(w1, I1 + I2, var, wunit=wunit1, unit=Iunit1, name=name)
+    sub = Spectrum.from_array(w1, I1 + I2, var, wunit=wunit1, Iunit=Iunit1, name=name)
     #    warn("Conditions of the left spectrum were copied in the substraction.", Warning)
     return sub
 
@@ -861,7 +886,7 @@ def substract_spectra(s1, s2, var=None):
 
     name = s1.get_name() + "-" + s2.get_name()
 
-    sub = Spectrum.from_array(w1, I1 - I2, var, wunit=wunit1, unit=Iunit1, name=name)
+    sub = Spectrum.from_array(w1, I1 - I2, var, wunit=wunit1, Iunit=Iunit1, name=name)
     #    warn("Conditions of the left spectrum were copied in the substraction.", Warning)
     return sub
 
@@ -1095,11 +1120,11 @@ def get_baseline(
     w1, I1 = s.get(var=var, wunit=wunit, Iunit=Iunit)
 
     if algorithm == "polynomial":
-        import peakutils
+        from radis.misc.signal import baseline
 
         polyargs = {"deg": 1, "max_it": 500}
         polyargs.update(kwargs)
-        baseline = peakutils.baseline(I1, **polyargs)
+        baseline = baseline(I1, **polyargs)
     elif algorithm == "als":
         from radis.misc.signal import als_baseline
 
@@ -1108,7 +1133,7 @@ def get_baseline(
         baseline = als_baseline(I1, **alsargs)
 
     baselineSpectrum = Spectrum.from_array(
-        w1, baseline, var, wunit=wunit, unit=Iunit, name=s.get_name() + "_baseline"
+        w1, baseline, var, wunit=wunit, Iunit=Iunit, name=s.get_name() + "_baseline"
     )
     return baselineSpectrum
 

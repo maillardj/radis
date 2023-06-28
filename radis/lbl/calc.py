@@ -20,12 +20,14 @@ Routine Listing
 from copy import deepcopy
 from os.path import exists
 
+# from radis.db.classes import M
+
 try:  # Proper import
-    from .base import get_waverange
+    from .base import get_wavenumber_range
     from .factory import SpectrumFactory
 except ImportError:  # if ran from here
     from radis.lbl.factory import SpectrumFactory
-    from radis.lbl.base import get_waverange
+    from radis.lbl.base import get_wavenumber_range
 
 from radis.misc.basics import all_in
 from radis.misc.utils import Default
@@ -44,6 +46,7 @@ def calc_spectrum(
     molecule=None,
     isotope="all",
     mole_fraction=1,
+    diluent="air",
     path_length=1,
     databank="hitran",
     medium="air",
@@ -52,7 +55,8 @@ def calc_spectrum(
     neighbour_lines=0,
     cutoff=1e-27,
     parsum_mode="full summation",
-    optimization="min-RMS",
+    optimization="simple",
+    chunksize=None,
     broadening_method="voigt",
     overpopulation=None,
     name=None,
@@ -126,6 +130,17 @@ def calc_spectrum(
 
             mole_fraction={'CO2': 0.8, 'CO':0.2}​
 
+    diluent: str or dictionary
+            can be a string of a single diluent or a dictionary containing diluent
+            name as key and its mole_fraction as value
+            For single diluent ::
+
+                diluent = 'CO2'
+
+            For multiple diluents ::
+
+                diluent = { 'CO2': 0.6, 'H2O':0.2}
+
     path_length: float [:math:`cm`] or `~astropy.units.quantity.Quantity`
         slab size. Default ``1`` cm​. Use arbitrary units::
 
@@ -146,11 +161,14 @@ def calc_spectrum(
           through :py:func:`~radis.io.hitemp.fetch_hitemp`. Downloads all lines
           and all isotopes.
         - ``'exomol'``, to fetch the latest ExoMol database
-          through :py:func:`~radis.io.hitemp.fetch_exomol`. To download a specific
+          through :py:func:`~radis.io.exomol.fetch_exomol`. To download a specific
           database use (more info in fetch_exomol) ::
 
             databank=('exomol', 'EBJT')   # 'EBJT' is a specific ExoMol database name
 
+        - ``'geisa'``, to fetch the GEISA 2020 database
+          through :py:func:`~radis.io.geisa.fetch_geisa`. Downloads all lines
+          and all isotopes.
         - the name of a a valid database file, in which case the format is inferred.
           For instance, ``'.par'`` is recognized as ``hitran/hitemp`` format.
           Accepts wildcards ``'*'`` to select multiple files ::
@@ -178,11 +196,11 @@ def calc_spectrum(
     ----------------
     medium: ``'air'``, ``'vacuum'``
         propagating medium when giving inputs with ``'wavenum_min'``, ``'wavenum_max'``.
-        Does not change anything when giving inputs in wavenumber. Default ``'air'``​ .
+        Does not change anything when giving inputs in wavenumber. Default ``'air'``​
     wstep: float (:math:`cm^{-1}`)  or `'auto'`
         Resolution of wavenumber grid. Default ``0.01`` cm-1.
         If `'auto'`, it is ensured that there
-        are slightly more or less than :py:data:`~radis.params.GRIDPOINTS_PER_LINEWIDTH_WARN_THRESHOLD`
+        are slightly more or less than :py:data:`radis.config` ``['GRIDPOINTS_PER_LINEWIDTH_WARN_THRESHOLD']``
         points for each linewidth.
 
         .. note::
@@ -212,7 +230,7 @@ def calc_spectrum(
         function are not already tabulated. ``'full summation'`` : sums over all
         (potentially millions) of rovibrational levels. ``'tabulation'`` :
         builds an on-the-fly tabulation of rovibrational levels (500 - 4000x faster
-        and usually accurate within 0.1%). Default ``full summation'``
+        and usually accurate within 0.1%). Default ``'full summation'``
 
         .. note::
             parsum_mode= 'tabulation'  is new in 0.9.30, and makes nonequilibrium
@@ -227,7 +245,7 @@ def calc_spectrum(
         If using the LDM optimization, broadening method is automatically set to ``'fft'``.
         If ``None``, no lineshape interpolation is performed and the lineshape of all lines is calculated.
         Refer to [Spectral-Synthesis-Algorithm]_ for more explanation on the LDM method for lineshape interpolation.
-        Default ``"min-RMS"``.
+        Default ``"simple"``.
     overpopulation: dict
         dictionary of overpopulation compared to the given vibrational temperature.
         Default ``None``. Example::
@@ -287,6 +305,9 @@ def calc_spectrum(
         - Or the :py:meth:`~radis.spectrum.spectrum.Spectrum.plot` method to plot it
           directly.
         - See [1]_ to get an overview of all Spectrum methods
+    :py:class:`~radis.lbl.factory.SpectrumFactory` : if using ``return_factory=True``
+        if multiple molecules, a dictionary of factories is returned
+
 
     References
     ----------
@@ -306,6 +327,7 @@ def calc_spectrum(
                           Tgas=1000,
                           mole_fraction=0.1,
                           databank='hitran',  # or 'hitemp'
+                          diluent = "air"     # or {'CO2': 0.1, 'air':0.8}
                           )
         s.apply_slit(0.5, 'nm')
         s.plot('radiance')
@@ -340,14 +362,14 @@ def calc_spectrum(
     For more details on how to use the GPU method and process the database, refer to the examples
     linked above and the documentation on :ref:`GPU support for RADIS <label_radis_gpu>`.
     ​
-    .. minigallery:: radis.lbl.calc.calc_spectrum
-        :add-heading:
+    .. minigallery:: radis.calc_spectrum
 
     References
     ----------
     **cite**: RADIS is built on the shoulders of many state-of-the-art packages and databases. If using RADIS
     to compute spectra, make sure you cite all of them, for proper reproducibility and acknowledgement of
-    the work ! See :ref:`How to cite? <label_cite>`
+    the work ! See :ref:`How to cite? <label_cite>` and the :py:meth:`~radis.spectrum.spectrum.Spectrum.cite`
+    method.
 
     See Also
     --------
@@ -359,7 +381,7 @@ def calc_spectrum(
     # ... wavelengths / wavenumbers
 
     # Get wavenumber, based on whatever was given as input.
-    wavenum_min, wavenum_max = get_waverange(
+    wavenum_min, wavenum_max, input_wunit = get_wavenumber_range(
         wmin,
         wmax,
         wunit,
@@ -368,6 +390,7 @@ def calc_spectrum(
         kwargs.pop("wavelength_min") if "wavelength_min" in kwargs else None,
         kwargs.pop("wavelength_max") if "wavelength_max" in kwargs else None,
         medium,
+        return_input_wunit=True,
     )
 
     # Deal with Multi-molecule mode:
@@ -452,8 +475,6 @@ def calc_spectrum(
             if isinstance(argument_dict, dict):
                 # Choose the correspond value
                 molecule_dict[molecule][argument_name] = argument_dict[molecule]
-                # Will raise a KeyError if not defined. That's fine!
-                # TODO: maybe need to catch KeyError and raise a better error message?
             else:  # argument_name is not a dictionary.
                 # Let's distribute the same value to every molecule:
                 molecule_dict[molecule][argument_name] = argument_dict
@@ -505,9 +526,15 @@ def calc_spectrum(
         # We add all of the DICT_INPUT_ARGUMENTS values:
         kwargs_molecule.update(**dict_arguments)
 
+        # getting diluents for this molecule
+        diluent_for_this_molecule = diluents_for_molecule(
+            mole_fraction, diluent, molecule
+        )
+
         generated_spectrum = _calc_spectrum_one_molecule(
             wavenum_min=wavenum_min,
             wavenum_max=wavenum_max,
+            input_wunit=input_wunit,
             Tgas=Tgas,
             Tvib=Tvib,
             Trot=Trot,
@@ -525,6 +552,7 @@ def calc_spectrum(
             cutoff=cutoff,
             parsum_mode=parsum_mode,
             optimization=optimization,
+            chunksize=chunksize,
             broadening_method=broadening_method,
             name=name,
             use_cached=use_cached,
@@ -532,16 +560,18 @@ def calc_spectrum(
             mode=mode,
             export_lines=export_lines,
             return_factory=return_factory,
+            diluent=diluent_for_this_molecule,
             **kwargs_molecule,
         )
+
         if return_factory:
             factory_dict[molecule] = generated_spectrum[1]
             generated_spectrum = generated_spectrum[0]  # the spectrum
         s_list.append(generated_spectrum)
 
-        if condition_multiple_wstep:
-            # Stores the minimum wstep value encountered
-            wstep[1] = generated_spectrum.get_conditions()["wstep"]
+        # if condition_multiple_wstep:
+        #     # Stores the minimum wstep value encountered
+        #     wstep[1] = generated_spectrum.get_conditions()["wstep"]
 
     # Stage 4: merge all molecules and return
     if condition_multiple_wstep:
@@ -553,6 +583,8 @@ def calc_spectrum(
         s.store(path=save_to, if_exists_then="replace", verbose=verbose)
 
     if return_factory:
+        if len(factory_dict) == 1:  # return unique element directly
+            factory_dict = factory_dict[list(factory_dict.keys())[0]]
         return s, factory_dict
     else:
         return s
@@ -561,6 +593,7 @@ def calc_spectrum(
 def _calc_spectrum_one_molecule(
     wavenum_min,
     wavenum_max,
+    input_wunit,
     Tgas,
     Tvib,
     Trot,
@@ -578,6 +611,7 @@ def _calc_spectrum_one_molecule(
     cutoff,
     parsum_mode,
     optimization,
+    chunksize,
     broadening_method,
     name,
     use_cached,
@@ -585,9 +619,20 @@ def _calc_spectrum_one_molecule(
     mode,
     export_lines,
     return_factory=False,
+    diluent="air",
     **kwargs,
 ) -> Spectrum:
-    """See :py:func:`~radis.lbl.calc.calc_spectrum`"""
+    """See :py:func:`~radis.lbl.calc.calc_spectrum`
+
+    Parameters
+    ----------
+    input_wunit: 'nm', 'nm_vac', 'cm-1'
+        in which wavespace was the input given before conversion (used to keep
+        default plot/get consistent with input units)
+    """
+
+    # Initialize Factory
+    # ------------------
 
     # Check inputs
 
@@ -610,8 +655,8 @@ def _calc_spectrum_one_molecule(
         # factory is used once only
         kwargs["save_memory"] = True
 
-    if "chunksize" in kwargs:
-        raise DeprecationWarning("use optimization= instead of chunksize=")
+    # if "chunksize" in kwargs:
+    #     raise DeprecationWarning("use optimization= instead of chunksize=")
 
     def _is_at_equilibrium():
         try:
@@ -642,15 +687,36 @@ def _calc_spectrum_one_molecule(
         pressure=pressure,
         wstep=wstep,
         truncation=truncation,
+        mole_fraction=mole_fraction,
         neighbour_lines=neighbour_lines,
         cutoff=cutoff,
         parsum_mode=parsum_mode,
         verbose=verbose,
         optimization=optimization,
+        chunksize=chunksize,
         broadening_method=broadening_method,
         export_lines=export_lines,
+        diluent=diluent,
         **kwargs,
     )
+    # Have consistent output units
+    sf.input_wunit = input_wunit
+
+    # Checking diluent other than air present
+    if isinstance(diluent, str):
+        if diluent == "air":
+            diluent_other_than_air = False
+        else:
+            diluent_other_than_air = True
+    else:
+        diluent_other_than_air = len(diluent) > 1 or (
+            len(diluent) == 1 and "air" not in diluent
+        )
+
+    # Load databank
+    # -------------
+
+    # Get databank
     if (
         databank
         in [
@@ -658,6 +724,7 @@ def _calc_spectrum_one_molecule(
             "hitran",
             "hitemp",
             "exomol",
+            "geisa",
         ]
         or (isinstance(databank, tuple) and databank[0] == "exomol")
         or (isinstance(databank, tuple) and databank[0] == "hitran")
@@ -686,6 +753,12 @@ def _calc_spectrum_one_molecule(
                 "source": "exomol",
                 "parfuncfmt": "exomol",  # download & use Exo partition functions for equilibrium}
             }
+        elif databank in ["geisa"]:
+            conditions = {
+                "source": "geisa",
+                "parfuncfmt": "hapi",
+                # TODO: replace with GEISA partition function someday.............
+            }
         elif isinstance(databank, tuple) and databank[0] == "exomol":
             conditions = {
                 "source": "exomol",
@@ -705,18 +778,25 @@ def _calc_spectrum_one_molecule(
             # constants (not all molecules are supported!)
             conditions["levelsfmt"] = "radis"
             conditions["lvl_use_cached"] = use_cached
-
         # Columns to load
         if export_lines:
             conditions["load_columns"] = "all"
+            conditions["extra_params"] = "all"
+        elif not _equilibrium and diluent_other_than_air:
+            conditions["load_columns"] = ["noneq", "diluent"]
+            conditions["extra_params"] = "all"
         elif not _equilibrium:
             conditions["load_columns"] = "noneq"
+        elif diluent_other_than_air:
+            conditions["load_columns"] = ["equilibrium", "diluent"]
+            conditions["extra_params"] = "all"
         else:
             conditions["load_columns"] = "equilibrium"
 
         conditions["load_energies"] = not _equilibrium
         # Details to identify lines
         conditions["parse_local_global_quanta"] = (not _equilibrium) or export_lines
+
         # Finally, LOAD :
         sf.fetch_databank(**conditions)
     elif exists(databank):
@@ -761,8 +841,12 @@ def _calc_spectrum_one_molecule(
         # Columns to load
         if export_lines:
             conditions["load_columns"] = "all"
+        elif not _equilibrium and diluent_other_than_air:
+            conditions["load_columns"] = ["noneq", "diluent"]
         elif not _equilibrium:
             conditions["load_columns"] = "noneq"
+        elif diluent_other_than_air:
+            conditions["load_columns"] = ["equilibrium", "diluent"]
         else:
             conditions["load_columns"] = "equilibrium"
 
@@ -775,8 +859,12 @@ def _calc_spectrum_one_molecule(
         # Columns to load
         if export_lines:
             load_columns = "all"
+        elif not _equilibrium and diluent_other_than_air:
+            load_columns = ["noneq", "diluent"]
         elif not _equilibrium:
             load_columns = "noneq"
+        elif diluent_other_than_air:
+            load_columns = ["equilibrium", "diluent"]
         else:
             load_columns = "equilibrium"
 
@@ -798,6 +886,8 @@ def _calc_spectrum_one_molecule(
     if overpopulation is not None or overpopulation != {}:
         sf.misc.export_rovib_fraction = True  # required to compute Partition fucntions with overpopulation being taken into account
 
+    # Calculate Spectrum
+    # ------------------
     # Use the standard eq_spectrum / non_eq_spectrum functions
     if _equilibrium:
         if mode == "cpu":
@@ -840,9 +930,34 @@ def _calc_spectrum_one_molecule(
         return s
 
 
+# Function to get diluent(s) for a molecule
+def diluents_for_molecule(mole_fraction, diluent, molecule):
+    diluent_for_this_molecule = {}
+    if isinstance(diluent, dict):
+        diluent_for_this_molecule = diluent.copy()
+    else:
+        if isinstance(mole_fraction, dict):
+            diluent_for_this_molecule[diluent] = 1 - sum(list(mole_fraction.values()))
+        else:
+            diluent_for_this_molecule[diluent] = 1 - mole_fraction
+
+    # Adding the other molecules from the gas mixture as diluent for the calculation of this particular molecule
+    if isinstance(mole_fraction, dict):
+        for other_molecule, other_fraction in mole_fraction.items():
+            if other_molecule != molecule:
+                if other_molecule in diluent_for_this_molecule:
+                    diluent_for_this_molecule[other_molecule] += other_fraction
+                else:
+                    diluent_for_this_molecule[other_molecule] = other_fraction
+
+    return diluent_for_this_molecule
+
+
 # --------------------------
 if __name__ == "__main__":
 
     from radis.test.lbl.test_calc import _run_testcases
 
     print(_run_testcases(verbose=True))
+
+# %%

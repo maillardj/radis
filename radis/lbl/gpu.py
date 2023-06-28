@@ -140,7 +140,7 @@ def py_calc_gaussian_envelope_params(log_2vMm, verbose=False):
 
 
 try:
-    from radis_cython_extensions import (
+    from radis_cython_extensions import (  # isort:skip
         calc_gaussian_envelope_params,
         calc_lorentzian_envelope_params,
     )
@@ -466,7 +466,7 @@ def gpu_init(
         from numpy import complex64, float32, zeros
 
         array = lambda arr: arr
-        from radis_cython_extensions import set_init_params
+        from radis_cython_extensions import set_init_params  # isort:skip
 
     init_h.v_min = np.min(v_arr)  # 2000.0
     init_h.v_max = np.max(v_arr)  # 2400.0
@@ -528,7 +528,7 @@ def gpu_init(
     log_c2Mm_arr = np.array(
         [0]
         + [
-            0.5 * np.log(8 * k * np.log(2) / (c ** 2 * Mm * 1e-3 / N_A))
+            0.5 * np.log(8 * k * np.log(2) / (c**2 * Mm * 1e-3 / N_A))
             for Mm in Mm_arr[1:]
         ]
     )
@@ -607,15 +607,19 @@ def gpu_iterate(p, T, mole_fraction, l=1.0, slit_FWHM=0.0, verbose=0, gpu=False)
         set_iter_params = constant_memory_setter(cuda_module, "iter_d")
 
     else:
+        # isort: off
         from numpy import complex64, float32, zeros
         from numpy.fft import irfft, rfft
-        from radis_cython_extensions import (
+
+        from radis_cython_extensions import (  # isort:skip
             applyGaussianSlit,
             applyLineshapes,
             calcTransmittanceNoslit,
             fillLDM,
             set_iter_params,
         )
+
+        # isort: on
 
         asnumpy = lambda arr: arr
 

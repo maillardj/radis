@@ -8,13 +8,40 @@ Created on Tue Feb  2 13:51:40 2021
 
 import pytest
 
-from radis.io.hitemp import HITEMP_MOLECULES, HITEMPDatabaseManager, fetch_hitemp
+from radis.api.hitempapi import (
+    HITEMP_MOLECULES,
+    HITEMPDatabaseManager,
+    keep_only_relevant,
+)
+from radis.io.hitemp import fetch_hitemp
 from radis.misc.config import getDatabankList
+
+
+@pytest.mark.needs_connection
+@pytest.mark.fast
+def test_no_redownload(*args, **kwargs):
+    """Test that modification time for 2 successive hitemp fetch is the same, i.e.,
+    there is no redownload"""
+
+    # 1st call
+    df, local_files = fetch_hitemp(
+        "OH",
+        return_local_path=True,
+    )
+    from os.path import getmtime
+
+    first_mod_time = getmtime(local_files[0])
+
+    # 2nd call
+    df, local_files = fetch_hitemp(
+        "OH",
+        return_local_path=True,
+    )
+    assert first_mod_time == getmtime(local_files[0])
 
 
 @pytest.mark.fast
 def test_relevant_files_filter():
-    from radis.io.hitemp import keep_only_relevant
 
     files = [
         "02_00000-00500_HITEMP2010.zip",
@@ -154,8 +181,6 @@ def test_fetch_hitemp_partial_download_CO2(verbose=True, *args, **kwargs):
 
     """
     from os.path import basename
-
-    from radis.io.hitemp import keep_only_relevant
 
     wmin = 2700
     wmax = 3000
@@ -425,6 +450,7 @@ def test_parse_hitemp_missing_labels_issue280(*args, **kwargs):
 
 
 if __name__ == "__main__":
+    test_no_redownload()
     test_relevant_files_filter()
     test_fetch_hitemp_OH_pytables()
     test_fetch_hitemp_OH_vaex()

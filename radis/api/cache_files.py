@@ -7,15 +7,15 @@ Routine Listing
 ---------------
 
 
-- :func:`~radis.io.cache_files.check_cache_file`
-- :func:`~radis.io.cache_files.check_not_deprecated`
-- :func:`~radis.io.cache_files.save_to_hdf`
+- :func:`~radis.api.cache_files.check_cache_file`
+- :func:`~radis.api.cache_files.check_not_deprecated`
+- :func:`~radis.api.cache_files.save_to_hdf`
 
 See Also
 --------
 
-:py:func:`~radis.io.hitran.hit2df`,
-:py:func:`~radis.io.cdsd.cdsd2df`
+:py:func:`~radis.api.hitranapi.hit2df`,
+:py:func:`~radis.api.cdsdapi.cdsd2df`
 
 -------------------------------------------------------------------------------
 """
@@ -29,7 +29,7 @@ See Also
 # Note: don't import unicode_literals because it breaks the df.to_hdf of
 # save_to_hdf because of a stupid unicode/str error in Python 2.7
 import os
-from os.path import exists, splitext
+from os.path import exists
 from warnings import warn
 
 from packaging.version import parse
@@ -37,9 +37,12 @@ from packaging.version import parse
 import radis
 
 try:
-    from .hdf5 import HDF5Manager
-except ImportError:  # if file is ran as a module
-    from radis.io.hdf5 import HDF5Manager
+    from .hdf5 import DataFileManager
+except ImportError:
+    if __name__ == "__main__":  # running from this file, as a script
+        from radis.api.hdf5 import DataFileManager
+    else:
+        raise
 from radis.misc.basics import compare_dict, is_float
 from radis.misc.printer import printm, printr
 from radis.misc.warning import DeprecatedFileWarning, IrrelevantFileWarning
@@ -179,8 +182,8 @@ def load_h5_cache_file(
         printm("Reading cache file ({0})".format(cachefile))
     try:
         # Load file :
-        manager = HDF5Manager(engine)
-        df = manager.load(cachefile, columns=columns, key="df")
+        manager = DataFileManager(engine)
+        df = manager.read(cachefile, columns=columns, key="df")
 
     except KeyError as err:  # An error happened during file reading.
         # Fail safe by deleting cache file (unless we explicitely wanted it
@@ -222,8 +225,8 @@ def get_cache_file(fcache, engine="pytables", verbose=True):
     # TODO @dev: refactor : we probably don't need this function (only used in astroquery)
 
     # Load file
-    manager = HDF5Manager(engine)
-    df = manager.load(fcache, key="df")
+    manager = DataFileManager(engine)
+    df = manager.read(fcache, key="df")
 
     # Check file
     # ... 'object' columns slow everything down (not fixed format strings!)
@@ -251,7 +254,7 @@ def check_cache_file(
     - if ``'force'``, raise an error if file doesnt exist.
 
     Then look if it is deprecated (we just look at the attributes, the file
-    is never fully read). Deprecation is done by :py:func:`~radis.io.cache_files.check_not_deprecated`
+    is never fully read). Deprecation is done by :py:func:`~radis.api.cache_files.check_not_deprecated`
     comparing the ``metadata=`` content.
 
     - if deprecated, deletes it to regenerate later unless 'force' was used
@@ -282,7 +285,7 @@ def check_cache_file(
     See Also
     --------
 
-    :py:func:`~radis.io.cache_files.check_not_deprecated`
+    :py:func:`~radis.api.cache_files.check_not_deprecated`
     """
 
     # Test existence of file:
@@ -368,10 +371,10 @@ def check_not_deprecated(
         which HDF5 library to use. If ``'guess'``, try to guess.
     """
     if engine == "guess":
-        engine = HDF5Manager.guess_engine(file)
+        engine = DataFileManager.guess_engine(file)
 
     # Get metadata :
-    manager = HDF5Manager(engine)
+    manager = DataFileManager(engine)
 
     try:
         file_metadata = manager.read_metadata(file)
@@ -526,10 +529,10 @@ def check_relevancy(
 
     """
     if engine == "guess":
-        engine = HDF5Manager.guess_engine(file)
+        engine = DataFileManager.guess_engine(file)
 
     # Get metadata :
-    manager = HDF5Manager(engine)
+    manager = DataFileManager(engine)
     file_metadata = manager.read_metadata(file, key=key)
 
     for k, v in relevant_if_metadata_above.items():
@@ -607,7 +610,7 @@ def save_to_hdf(
      ``None`` values are not stored
     """
     # Check file
-    assert fname.endswith(".h5") or fname.endswith(".hdf5")
+    assert str(fname).endswith(".h5") or str(fname).endswith(".hdf5")
     assert "version" not in metadata
     # ... 'object' columns slow everything down (not fixed format strings!)
     if verbose >= 2:
@@ -621,7 +624,7 @@ def save_to_hdf(
         raise ValueError("File exist: {0}".format(fname))
 
     # start by exporting dataframe
-    manager = HDF5Manager(engine)
+    manager = DataFileManager(engine)
     manager.write(fname, df, append=False, key=key)
 
     # Add metadata
@@ -631,7 +634,7 @@ def save_to_hdf(
         version = radis.__version__
     metadata.update({"version": version})
 
-    manager.add_metadata(fname, metadata)
+    manager.add_metadata(fname, metadata, key=key)
 
     if verbose >= 3:
         print("... saved {0} with metadata: {1}".format(fname, metadata))
@@ -686,19 +689,7 @@ def filter_metadata(arguments, discard_variables=["self", "verbose"]):
 
 
 def cache_file_name(fname, engine="pytables"):
-    """Return the corresponding cache file name for fname.
-
-    Other Parameters
-    ----------------
-    engine: ``'h5py'``, ``'pytables'``, ``'vaex'``
-       which HDF5 library to use. Default ``pytables``
-    """
-    if engine in ["pytables", "pytables-fixed"]:
-        return splitext(fname)[0] + ".h5"
-    elif engine in ["h5py", "vaex"]:
-        return splitext(fname)[0] + ".hdf5"
-    else:
-        raise ValueError(engine)
+    raise DeprecationWarning("Use DataFileManager.cache_file() instead")
 
 
 if __name__ == "__main__":

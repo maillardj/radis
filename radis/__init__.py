@@ -43,6 +43,7 @@ from .misc.utils import getProjectRoot
 # here, and a radis/config.json file.
 # Everything should be merged in a user JSON file ~/radis.json (json) overriding
 # the default one.
+# # molecular parameters for non-HITRAN species    should also be removed #TODO
 
 config = get_config()
 """dict: RADIS configuration parameters
@@ -78,9 +79,7 @@ Parameters
         import radis
         radis.config["AUTO_UPDATE_SPEC"] = True
 
-    See Also
-    --------
-    :py:func:`~radis.tools.database._update_to_latest_format`
+    You can also see: :py:func:`~radis.tools.database._update_to_latest_format`
 
 
 "AUTO_UPDATE_DATABASE": False
@@ -90,17 +89,14 @@ Parameters
 	Warning! Better have a copy of your files before that, or a way to regenerate
 	them.
 
-	Examples
-	--------
-
-	Add to the top of your script (once is enough!)::
+	Example. Add to the top of your script (once is enough!)::
 
 	    import radis
 	    radis.AUTO_UPDATE_DATABASE = True
 
 	See Also
 	--------
-	:py:func:`~radis.io.hdf5.hdf2df`
+	:py:func:`~radis.api.hdf5.hdf2df`
 
 
 "OLDEST_COMPATIBLE_VERSION": "0.9.1"
@@ -108,15 +104,13 @@ Parameters
 
     See Also
     --------
-    :py:func:`~radis.io.cache_files.load_h5_cache_file`
+    :py:func:`~radis.api.cache_files.load_h5_cache_file`
 
 
 "USE_CYTHON": True
     bool: try to use Cython functions when possible
 
-    See Also
-    --------
-    :py:func:`~radis.misc.arrays.add_at`
+    See more in :py:func:`radis.misc.arrays.add_at`
 
 
 "GRIDPOINTS_PER_LINEWIDTH_WARN_THRESHOLD": 3
@@ -124,9 +118,7 @@ Parameters
     of wstep using minimum FWHM value of spectrum.
     Makes sure there are enough gridpoints per line.
 
-    See Also
-    --------
-    :py:meth:`~radis.lbl.broadening.BroadenFactory._check_accuracy`
+    See more in :  :py:meth:`radis.lbl.broadening.BroadenFactory._check_accuracy`
 
 
 "GRIDPOINTS_PER_LINEWIDTH_ERROR_THRESHOLD": 1
@@ -134,9 +126,7 @@ Parameters
     of wstep using minimum FWHM value of spectrum.
     Makes sure there are enough gridpoints per line.
 
-    See Also
-    --------
-    :py:meth:`~radis.lbl.broadening.BroadenFactory._check_accuracy`
+    See more in :     :py:meth:`radis.lbl.broadening.BroadenFactory._check_accuracy`
 
 "SPARSE_WAVERANGE": True
     bool: if True, allow special optimizations to improve performances for
@@ -148,19 +138,24 @@ Parameters
     cases, you may deactivate it by setting ``radis.config['SPARSE_WAVERANGE'] = False``
     Default ``True``
 
-    See Also
-    --------
-    :py:meth:`~radis.lbl.broadening.BroadenFactory._apply_lineshape_LDM`
+    See more in  :py:meth:`radis.lbl.broadening.BroadenFactory._apply_lineshape_LDM`
 
+"RESAMPLING_TOLERANCE_THRESHOLD" 5e-3
+    an error if raises if areas do not match by a value above this threshold,
+    during resampling. See :py:meth:`~radis.spectrum.spectrum.Spectrum.resample`
+
+    Default ``5e-3``
 
 
 Notes
 -----
 
-Default values are read from the ``radis/config.json`` file.
+Default values are read from the `radis/default_radis.json <https://github.com/radis/radis/blob/develop/radis/default_radis.json>`__ file.
 
 All values are overriden at runtime by the keys in the user JSON file ``~/radis.json (json)``
 (in particular, the list of databases)
+
+See more in the :ref:`Configuration file <label_lbl_config_file>` documentation.
 """
 # TODO : Refactor in progress.
 
@@ -221,8 +216,9 @@ __all__ = [
     "__version__",
 ]
 
-# prevent cyclic importants:
-from . import db, io, lbl, los, misc, phys, spectrum, tools
+# prevent cyclic imports:
+from . import api, db, io, lbl, los, misc, phys, spectrum, tools
+from .api import *  # input / output common with ExoJax
 from .db import *  # database of molecules
 from .io import *  # input / output
 from .lbl import *  # line-by-line module
@@ -233,6 +229,7 @@ from .spectrum import *  # Spectrum object
 from .test import *  # test
 from .tools import *  # slit, database, line survey, etc.
 
+__all__.extend(api.__all__)
 __all__.extend(db.__all__)
 __all__.extend(io.__all__)
 __all__.extend(lbl.__all__)

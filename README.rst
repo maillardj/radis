@@ -13,8 +13,6 @@ with RADIS or other spectral codes.
 
 User guide, install procedure and examples are available on the `RADIS Website <http://radis.readthedocs.io/>`__:
 
-|badge_docs|
-
 
 ===============
 Getting Started
@@ -23,13 +21,23 @@ Getting Started
 Install
 -------
 
-Assuming you have Python installed with the `Anaconda <https://www.anaconda.com/download/>`_ distribution just use::
+Assuming you have Python installed with pip then use this command to install::
 
     pip install radis -v
 
+if you want to install **radis** through *conda* then use this command to ::
+
+    conda install radis -c conda-forge
+
+or with *mamba*::
+
+    mamba install radis
+
+
+
 **That's it!** You can now run your first example below.
 If you encounter any issue, or to upgrade the package later, please refer to the
-`detailed installation procedure <https://radis.readthedocs.io/en/latest/dev/install.html#label-install>`__ .
+`detailed installation procedure <https://radis.readthedocs.io/en/latest/dev/developer.html#label-install>`__ .
 
 Quick Start
 -----------
@@ -140,7 +148,7 @@ A simple web-app for RADIS under development.
     :target: https://radis.app/
     :alt: https://radis.app/
 
-See more `on GitHub <https://github.com/radis/radis-ui>`__
+See more `on GitHub <https://github.com/suzil/radis-app>`__
 
 
 RADIS-lab
@@ -201,6 +209,21 @@ RADIS internals are described in the `Developer Guide <https://radis.readthedocs
 .. image:: https://radis.readthedocs.io/en/latest/_images/RADIS_flow_chart.svg
      :target:   https://radis.readthedocs.io/en/latest/dev/architecture.html#label-dev-architecture
      :alt: https://radis.readthedocs.io/en/latest/_images/RADIS_flow_chart.svg
+
+
+### Matlab
+
+Matlab users can seamlessly access Python modules
+
+Here's what's you'll need:
+
+1. [Setup Python &harr; Matlab interface](https://www.scivision.dev/matlab-python-user-module-import/).
+2. Install RADIS in Python as at the top of this Readme.
+3. From Matlab, verify everything is working by:
+
+        ```
+        py.radis.calc_spectrum()
+        ```
 
 
 License
@@ -274,7 +297,7 @@ See `awesome-spectra <https://github.com/erwanp/awesome-spectra>`__   |badge_awe
 .. |CO2| replace:: CO\ :sub:`2`
 
 .. |badge_docs| image:: https://readthedocs.org/projects/radis/badge/
-                :target: https://radis.readthedocs.io/en/latest/?badge=latest
+                :target: https://readthedocs.org/projects/radis/
                 :alt: Documentation Status
 
 .. |badge_article1| image:: https://zenodo.org/badge/doi/10.1016/j.jqsrt.2018.09.027.svg

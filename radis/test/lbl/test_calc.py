@@ -70,13 +70,9 @@ def test_calc_spectrum(verbose=True, plot=True, warnings=True, *args, **kwargs):
     (just used here as a performance monitoring)
 
     - neq 0.9.20: 18.7s
-
     - neq 0.9.20*: 15.4s   (removed 2nd loop on 1st isotope because of groupby().apply())
-
     - neq 0.9.20**: 11.7s  (after replacing fill_Evib with map() )
-
     - neq 0.9.21: 9.4s     (improve Qrot / nrot fetching performance)
-
     - neq 0.9.22: 8.4s
 
     Starting from RADIS 1.0.1, the test is run on [HITRAN-2020]_, which
@@ -88,6 +84,7 @@ def test_calc_spectrum(verbose=True, plot=True, warnings=True, *args, **kwargs):
 
     - radis 0.9.20 : 2.49 s    on [HITRAN-2020]
                      4.05 s    on [CDSD-HITEMP-JMIN]
+    - radis 0.12.2 : 1.1s      on [HITRAN-2020]   (most time spent in the Evib, Erot look-up)
 
     """
     if verbose:
@@ -101,6 +98,8 @@ def test_calc_spectrum(verbose=True, plot=True, warnings=True, *args, **kwargs):
     s = calc_spectrum(
         wavelength_min=4165,
         wavelength_max=4200,
+        # wavenum_min=1e7/4200,
+        # wavenum_max=1e7/4165,
         #                          databank='CDSD-HITEMP-JMIN',
         databank="hitran",  # not appropriate for these temperatures, but convenient for automatic testing
         # databank="HITRAN-CO2-TEST",  # to use, but only has 1 isotope. TODO add new test file with 2 isotopes
@@ -128,9 +127,9 @@ def test_calc_spectrum(verbose=True, plot=True, warnings=True, *args, **kwargs):
     s.apply_slit((2, 2.5), "nm", shape="trapezoidal")
 
     if plot:
-        s.plot(wunit="nm")
+        s.plot(wunit="nm", Iunit="mW/cm2/sr/nm")
 
-    w, I = s.get("radiance", wunit="nm")
+    w, I = s.get("radiance", wunit="nm", Iunit="mW/cm2/sr/nm")
     # Compare against hardcoded results (neq 0.9.22, 28/06/18)
     #        I_ref = np.array([0.28694463, 0.29141711, 0.32461613, 0.32909566, 0.21939511, 0.18606445,
     #                          0.19740763, 0.16948599, 0.16780345, 0.15572173, 0.16770853, 0.14966064,
@@ -764,6 +763,7 @@ def test_calc_spectrum_multiple_molecules_inputerror(
     return True
 
 
+@pytest.mark.fast
 @pytest.mark.needs_connection
 def test_calc_spectrum_multiple_molecules_wstep_auto(
     verbose=True, plot=True, warnings=True, *args, **kwargs
@@ -777,19 +777,178 @@ def test_calc_spectrum_multiple_molecules_wstep_auto(
     s = calc_spectrum(
         wavelength_min=4165,
         wavelength_max=5000,  # cm-1
-        isotope="1,2,3",
-        pressure=1.01325,  # bar
+        isotope="1",
+        pressure=10.01325,  # bar
         Tgas=700,  # K
-        mole_fraction={"CO": 0.1, "CO2": 0.1},
+        mole_fraction={"CO": 0.01, "CO2": 0.01},
         path_length=1,  # cm
         wstep="auto",
         databank="hitran",  # or use 'hitemp'
         verbose=verbose,
     )
+    s_just_CO = calc_spectrum(
+        wavelength_min=4165,
+        wavelength_max=5000,  # cm-1
+        isotope="1",
+        pressure=10.01325,  # bar
+        Tgas=700,  # K
+        mole_fraction={"CO": 0.01},
+        diluent={"CO2": 0.01, "air": 0.98},
+        path_length=1,  # cm
+        wstep="auto",
+        databank="hitran",  # or use 'hitemp'
+        verbose=verbose,
+    )
+    s_just_CO2 = calc_spectrum(
+        wavelength_min=4165,
+        wavelength_max=5000,  # cm-1
+        isotope="1",
+        pressure=10.01325,  # bar
+        Tgas=700,  # K
+        mole_fraction={"CO2": 0.01},
+        diluent={"CO": 0.01, "air": 0.98},
+        path_length=1,  # cm
+        wstep="auto",
+        databank="hitran",  # or use 'hitemp'
+        verbose=verbose,
+    )
+    wCO = s_just_CO.get_conditions()["wstep"]
+    wCO2 = s_just_CO2.get_conditions()["wstep"]
 
     # Check calculation went fine:
     assert set(s.conditions["molecule"]) == set(["CO2", "CO"])
-    assert s.get_conditions()["wstep"] in ("N/A", 0.013)
+    assert wCO < wCO2
+    assert np.isclose(s.get_conditions()["wstep"], wCO)
+
+
+def test_check_wavelength_range(verbose=True, warnings=True, *args, **kwargs):
+    """Check that input wavelength is correctly taken into account.
+    See https://github.com/radis/radis/issues/214
+    """
+    if verbose:
+        printm("Testing calc_spectrum wavelength range")
+
+    wstep = 0.01
+
+    s = calc_spectrum(
+        wavelength_min=4348,  # nm
+        wavelength_max=5000,
+        molecule="CO",
+        isotope="1,2,3",
+        pressure=1.01325,  # bar
+        Tvib=1700,  # K
+        Trot=1700,  # K
+        databank="HITRAN-CO-TEST",
+        wstep=wstep,
+    )
+    w, I = s.get("radiance_noslit", wunit="nm", Iunit="mW/sr/cm2/nm")
+
+    assert np.isclose(w.min(), 4348, atol=wstep)
+    assert np.isclose(w.max(), 5000, atol=wstep)
+
+    return True
+
+
+def test_non_air_diluent_calc(verbose=True, plot=False, warnings=True, *args, **kwargs):
+    from radis import plot_diff
+
+    if verbose:
+        printm("Regenerating database with all params, and calculating non_air diluent")
+
+    # Regenerating database of CO and calculating non_air_diluent spectrum
+    s1 = calc_spectrum(
+        wavenum_min=2245,
+        wavenum_max=2250,
+        Tgas=700,
+        path_length=0.1,
+        molecule="CO",
+        mole_fraction=0.2,
+        isotope=1,
+        databank="hitran",
+        use_cached="regen",
+        diluent={"CO2": 0.2, "H2O": 0.1, "air": 0.5},
+        export_lines=True,
+    )
+
+    # Calculating spectrum with air as diluent
+    s2 = calc_spectrum(
+        wavenum_min=2245,
+        wavenum_max=2250,
+        Tgas=700,
+        path_length=0.1,
+        molecule="CO",
+        mole_fraction=0.2,
+        isotope=1,
+        databank="hitran",
+        export_lines=True,
+    )
+
+    assert s1.get_conditions()["diluents"] == {"CO2": 0.2, "H2O": 0.1, "air": 0.5}
+    assert s2.get_conditions()["diluents"] == {"air": 0.8}
+
+    hwhm_voigt_s1 = s1.lines.hwhm_voigt
+    hwhm_voigt_s2 = s2.lines.hwhm_voigt
+
+    assert (hwhm_voigt_s2 < hwhm_voigt_s1).all()
+    assert np.isclose(hwhm_voigt_s2[0], 0.022718389546218788)
+    assert np.isclose(hwhm_voigt_s1[0], 0.02530070148135749)
+
+    # if broadenings are different, the peak intensity should be different
+    # if the assert does not pass, then the code took the same broadening for both
+    maxI_air = s1.get_radiance_noslit().max()
+    maxI_dil = s2.get_radiance_noslit().max()
+    assert not np.isclose(maxI_air, maxI_dil)
+
+    if plot:
+        plot_diff(
+            s1,
+            s2,
+            method=["diff"],
+            label1="Diluent CO2, H2O, air",
+            label2="Diluent air",
+            title="Diluent CO2:0.2, H2O:0.1, air:0.5",
+        )
+
+    return True
+
+
+def test_diluent_invalid(verbose=True, plot=False, *args, **kwargs):
+
+    with pytest.raises(KeyError) as err:
+        calc_spectrum(
+            wavenum_min=2245,
+            wavenum_max=2250,
+            Tgas=700,
+            path_length=0.1,
+            molecule="CO",
+            mole_fraction=0.2,
+            isotope=1,
+            databank="hitran",
+            diluent="CO",
+        )
+
+    assert (
+        "is being called as molecule and diluent, please remove it from diluent."
+        in str(err.value)
+    )
+
+
+def test_diluents_for_molecule():
+
+    from radis.lbl.calc import diluents_for_molecule
+
+    mole_fractions = {"CO2": 0.2, "CO": 0.2}
+    diluent = "air"
+    # loop that simulates the calc_spectrum loop
+    for molecule, mole_fraction in mole_fractions.items():
+        diluent_for_this_molecule = diluents_for_molecule(
+            mole_fractions, diluent, molecule
+        )
+        # in the real code this is where calc_spectrum_one_molecule() is called
+        if molecule == "CO2":
+            assert diluent_for_this_molecule == {"air": 0.6, "CO": 0.2}  # etc
+        if molecule == "CO":
+            assert diluent_for_this_molecule == {"air": 0.6, "CO2": 0.2}  # etc
 
 
 def _run_testcases(plot=True, verbose=True, warnings=True, *args, **kwargs):
@@ -824,33 +983,9 @@ def _run_testcases(plot=True, verbose=True, warnings=True, *args, **kwargs):
     test_calc_spectrum_multiple_molecules_inputerror()
     test_calc_spectrum_multiple_molecules_wstep_auto()
 
-    return True
-
-
-def check_wavelength_range(verbose=True, warnings=True, *args, **kwargs):
-    """Check that input wavelength is correctly taken into account.
-    See https://github.com/radis/radis/issues/214
-    """
-    if verbose:
-        printm("Testing calc_spectrum wavelength range")
-
-    wstep = 0.01
-
-    s = calc_spectrum(
-        wavelength_min=4348,  # nm
-        wavelength_max=5000,
-        molecule="CO",
-        isotope="1,2,3",
-        pressure=1.01325,  # bar
-        Tvib=1700,  # K
-        Trot=1700,  # K
-        databank="HITRAN-CO-TEST",
-        wstep=wstep,
-    )
-    w, I = s.get("radiance_noslit", wunit="nm", Iunit="mW/sr/cm2/nm")
-
-    assert np.isclose(w.min(), 4348, atol=wstep)
-    assert np.isclose(w.max(), 5000, atol=wstep)
+    test_check_wavelength_range()
+    test_non_air_diluent_calc()
+    test_diluents_for_molecule()
 
     return True
 

@@ -248,7 +248,7 @@ def get_molecule_identifier(molecule_name):
     except KeyError:
         raise NotImplementedError(
             "Molecule '{0}' not supported. Choose one of {1}".format(
-                molecule_name, list(trans2.keys())
+                molecule_name, sorted(list(trans2.keys()))
             )
         )
 
@@ -284,9 +284,9 @@ def get_molecule(molecule_id):
 # %% ExoMol molecules
 
 
-from radis import config
+from radis.db.molparam import get_extra_molparams
 
-isotope_full_names = config["molparams"]["isotope_full_name"]
+isotope_full_names = get_extra_molparams()["isotope_full_name"]
 
 EXOMOL_ONLY_ISOTOPES_NAMES = {
     (molecule, int(iso_number)): iso_name
@@ -299,6 +299,7 @@ in :py:func:`~radis.io.exomol.get_exomol_full_isotope_name`
 assert EXOMOL_ONLY_ISOTOPES_NAMES[("FeH", 1)] == "56Fe-1H"
 assert EXOMOL_ONLY_ISOTOPES_NAMES[("SiO", 1)] == "28Si-16O"
 assert EXOMOL_ONLY_ISOTOPES_NAMES[("CN", 1)] == "12C-14N"
+
 
 EXOMOL_MOLECULES = [
     "AlCl",
@@ -323,10 +324,12 @@ EXOMOL_MOLECULES = [
     "CaF",
     "CaH",
     "CaO",
+    "CaOH",
     "CrH",
     "FeH",
     "H2",
     "H2CO",
+    "H2CS",
     "H2O",
     "H2O2",
     "H2S",
@@ -341,10 +344,12 @@ EXOMOL_MOLECULES = [
     "KCl",
     "KF",
     "KOH",
+    "LaO",
     "LiCl",
     "LiF",
     "LiH",
     "LiH_p",
+    "LiOH",
     "MgF",
     "MgH",
     "MgO",
@@ -377,6 +382,7 @@ EXOMOL_MOLECULES = [
     "SiH",
     "SiH2",
     "SiH4",
+    "SiN",
     "SiO",
     "SiO2",
     "SiS",
@@ -386,6 +392,9 @@ EXOMOL_MOLECULES = [
     "YO",
     "cis-P2H2",
     "trans-P2H2",
+    "ZrO",
+    "K",
+    "Na",
 ]
 EXOMOL_ONLY_MOLECULES = sorted(
     list(set([M for M, iso in EXOMOL_ONLY_ISOTOPES_NAMES.keys()]))
@@ -449,26 +458,21 @@ class Isotope(Molecule):
 
     Parameters
     ----------
-
     molecule_name: str, or int
         molecule name or HITRAN identifier
-
     isotope: int
         isotope identifier, sorted by decreasing abundance (cf HITRAN
         nomenclature)
 
     Other Parameters
     ----------------
-
     isotope_name: str
         (optional) isotope name. Default ''
-
     abundance: float
         isotopologue abundance. Default ``None``
 
     See Also
     --------
-
     :py:class:`~radis.db.classes.ElectronicState`, :py:class:`~radis.db.classes.Molecule`,
     :py:func:`~radis.db.molecules.getMolecule`
     """
@@ -575,6 +579,13 @@ class ElectronicState(Isotope):
         if neither vmax nor Jmax are given
     kwargs: **dict
         forwarded to parent class
+
+    Examples
+    --------
+
+    .. minigallery:: radis.db.classes.ElectronicState
+        :add-heading:
+
 
     See Also
     --------

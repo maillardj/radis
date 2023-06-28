@@ -13,16 +13,17 @@ from warnings import warn
 
 import numpy as np
 
-from radis.db.classes import get_molecule, get_molecule_identifier
-from radis.io.cdsd import columns_4000 as cdsd4000columns
-from radis.io.cdsd import columns_cdsdhitemp as cdsdhitempcolumns
-from radis.io.hitran import (  # HITRAN_CLASS2,; HITRAN_CLASS3,; HITRAN_CLASS6,; HITRAN_CLASS7,; HITRAN_CLASS8,; HITRAN_CLASS9,; HITRAN_CLASS10,
+from radis.api.cdsdapi import columns_4000 as cdsd4000columns
+from radis.api.cdsdapi import columns_cdsdhitemp as cdsdhitempcolumns
+from radis.api.hitranapi import (  # HITRAN_CLASS2,; HITRAN_CLASS3,; HITRAN_CLASS6,; HITRAN_CLASS7,; HITRAN_CLASS8,; HITRAN_CLASS9,; HITRAN_CLASS10,
     HITRAN_CLASS1,
     HITRAN_CLASS4,
     HITRAN_CLASS5,
 )
-from radis.io.hitran import columns_2004 as hitrancolumns
+from radis.api.hitranapi import columns_2004 as hitrancolumns
+from radis.db.classes import get_molecule, get_molecule_identifier
 from radis.misc.basics import is_float
+from radis.misc.printer import superscript_map
 from radis.misc.utils import NotInstalled
 from radis.phys.air import vacuum2air
 from radis.phys.constants import k_b
@@ -126,7 +127,9 @@ def LineSurvey(
 
     Examples
     --------
-    An example using the :class:`~radis.lbl.factory.SpectrumFactory` to generate a spectrum::
+    An example using the :class:`~radis.lbl.factory.SpectrumFactory` to generate a spectrum,
+    using the Spectrum :py:meth:`~radis.spectrum.spectrum.Spectrum.line_survey` method
+    directly ::
 
         from radis import SpectrumFactory
         sf = SpectrumFactory(
@@ -140,7 +143,7 @@ def LineSurvey(
         sf.load_databank('HITRAN-CO2-TEST')
         s = sf.eq_spectrum(Tgas=1500)
         s.apply_slit(0.5)
-        s.line_survey(overlay='radiance_noslit', barwidth=0.01)
+        s.line_survey(overlay='radiance_noslit', barwidth=0.01, lineinfo="all")
 
     See the output in :ref:`Examples <label_examples>`
 
@@ -156,6 +159,10 @@ def LineSurvey(
     .. [1] `RADIS Online Documentation (LineSurvey) <https://radis.readthedocs.io/en/latest/tools/line_survey.html>`__
 
     .. [2] `SpectraPlot <http://www.spectraplot.com/survey>`__
+
+    See Also
+    --------
+    :py:meth:`~radis.spectrum.spectrum.Spectrum.line_survey`
     """
 
     # Check inputs
@@ -205,7 +212,7 @@ def LineSurvey(
     dbformat = None
     if "dbformat" in spec.conditions:
         dbformat = spec.conditions["dbformat"]
-        if dbformat in ["hitran", "hitemp", "hitemp-radisdb"]:
+        if dbformat in ["hitran", "hitemp", "hitemp-radisdb", "geisa"]:
             columndescriptor = hitrancolumns
         elif dbformat in ["nist"]:
             columndescriptor = hitrancolumns  # Placeholder. TODO replace with NIST (for the moment we copy the names anyway)
@@ -277,6 +284,41 @@ def LineSurvey(
     # Parse databank to get relevant information on each line
     # (one function per databank format)
 
+    def add_details(row, details):
+        """Add details in string; add on 2 columns if "upper" and "lower" value follow"
+
+        Example :  keep "gu", "gl" on the same line
+
+        Also add unit if known
+        """
+        label = ""
+        for k in details:
+            name, _, unit = details[k]
+            if k[-1] == "u" and k[:-1] + "l" in details:
+                continue  #  don't show "upper" value. Will be shown on same line as lower
+
+            name = f"({name})" if name else name
+            if is_float(row[k]):
+                val = f"{row[k]:.3g}"
+            else:
+                val = f"{row[k]}"
+            label += f"<br>{k} {name}: {val} {unit}"
+            # If lower value, also show upper value on same line
+            if k[-1] == "l" and k[:-1] + "u" in details:
+                k_up = k[:-1] + "u"
+                if is_float(row[k_up]):
+                    label += (
+                        "&nbsp;" * (30 - len(k) - len(val))
+                        + f"{k_up} {name}: {row[k_up]:.3g} {unit}"
+                    )
+                else:
+                    label += (
+                        "&nbsp;" * (30 - len(k) - len(val))
+                        + f"{k_up} {name}: {row[k_up]} {unit}"
+                    )
+
+        return label
+
     def get_label_hitran(row, details, attrs):
         """
         Todo
@@ -290,102 +332,152 @@ def LineSurvey(
 
         will be much faster!
         """
+
         if "id" in attrs:
             molecule = get_molecule(attrs["id"])
 
         else:
-            id = get_molecule_identifier(spec.conditions["molecule"])
-            molecule = get_molecule(id)
+            molecule = spec.conditions["molecule"]
+            if isinstance(molecule, str):
+                id = get_molecule_identifier(molecule)
+                molecule = get_molecule(id)
 
-        # Get global labels
-        if molecule in HITRAN_CLASS1:
+        try:
+            # Try customized input
 
-            add = ["vu", "vl", "jl"]
+            # Get global labels
+            if (
+                molecule in HITRAN_CLASS1
+            ):  # ["CO", "HF", "HCl", "HBr", "HI", "N2", "NO+"]
 
-            if "isotope" in spec.conditions:
-                iso = spec.conditions["isotope"]
-                add.append("iso")
-                row["iso"] = iso
+                add = ["vu", "vl", "jl"]
 
-            label = "{molec} [{branch}{jl:.0f}]({vl:.0f})->({vu:.0f})".format(
-                **dict(
-                    [(k, row[k]) for k in add]
-                    + [
-                        ("molec", molecule),
-                        ("branch", _fix_branch_format[row["branch"]]),
-                    ]
+                if "iso" in row:
+                    iso = row["iso"]
+                elif "isotope" in spec.conditions:
+                    iso = spec.conditions["isotope"]
+                else:
+                    iso = "?"
+
+                label = (
+                    "{molec}[iso{iso}] [{branch}{jl:.0f}]({vl:.0f})->({vu:.0f})".format(
+                        **dict(
+                            [(k, row[k]) for k in add]
+                            + [
+                                ("iso", iso),
+                                ("molec", molecule),
+                                ("branch", _fix_branch_format[row["branch"]]),
+                            ]
+                        )
+                    )
                 )
-            )
-        elif molecule in HITRAN_CLASS4:
+            elif molecule in HITRAN_CLASS4:  #  ["N2O", "OCS", "HCN"]
 
-            add = [
-                "v1u",
-                "v2u",
-                "l2u",
-                "v3u",
-                "v1l",
-                "v2l",
-                "l2l",
-                "v3l",
-                "jl",
-            ]
+                add = [
+                    "v1u",
+                    "v2u",
+                    "l2u",
+                    "v3u",
+                    "v1l",
+                    "v2l",
+                    "l2l",
+                    "v3l",
+                    "jl",
+                ]
 
-            if "isotope" in spec.conditions:
-                iso = spec.conditions["isotope"]
-                add.append("iso")
-                row["iso"] = iso
+                if "iso" in row:
+                    iso = row["iso"]
+                elif "isotope" in spec.conditions:
+                    iso = spec.conditions["isotope"]
+                else:
+                    iso = "?"
 
-            label = "{molec} [{branch}{jl:.0f}]({v1l:.0f}{v2l:.0f}`{l2l:.0f}`{v3l:.0f})->({v1u:.0f}{v2u:.0f}`{l2u:.0f}`{v3u:.0f})".format(
-                **dict(
-                    [(k, row[k]) for k in add]
-                    + [
-                        ("molec", molecule),
-                        ("branch", _fix_branch_format[row["branch"]]),
-                    ]
+                label = "{molec} [{branch}{jl:.0f}]({v1l:.0f}{v2l:.0f}`{l2l:.0f}`{v3l:.0f})->({v1u:.0f}{v2u:.0f}`{l2u:.0f}`{v3u:.0f})".format(
+                    **dict(
+                        [(k, row[k]) for k in add]
+                        + [
+                            ("iso", iso),
+                            ("molec", molecule),
+                            ("branch", _fix_branch_format[row["branch"]]),
+                        ]
+                    )
                 )
-            )
-        elif molecule in HITRAN_CLASS5:
+            elif molecule in HITRAN_CLASS5:  # ["CO2"]
 
-            add = [
-                "v1u",
-                "v2u",
-                "l2u",
-                "v3u",
-                "v1l",
-                "v2l",
-                "l2l",
-                "v3l",
-                "rl",
-                "ru",
-                "jl",
-            ]
+                add = [
+                    "v1u",
+                    "v2u",
+                    "l2u",
+                    "v3u",
+                    "v1l",
+                    "v2l",
+                    "l2l",
+                    "v3l",
+                    "rl",
+                    "ru",
+                    "jl",
+                ]
 
-            if "isotope" in spec.conditions:
-                iso = spec.conditions["isotope"]
-                add.append("iso")
-                row["iso"] = iso
+                if "iso" in row:
+                    iso = row["iso"]
+                elif "isotope" in spec.conditions:
+                    iso = spec.conditions["isotope"]
+                else:
+                    iso = "?"
 
-            label = "{molec} [{branch}{jl:.0f}]({v1l:.0f}{v2l:.0f}`{l2l:.0f}`{v3l:.0f} {rl:.0f})->({v1u:.0f}{v2u:.0f}`{l2u:.0f}`{v3u:.0f} {ru:.0f})".format(
-                **dict(
-                    [(k, row[k]) for k in add]
-                    + [
-                        ("molec", molecule),
-                        ("branch", _fix_branch_format[row["branch"]]),
-                    ]
+                label = "{molec} [{branch}{jl:.0f}]({v1l:.0f}{v2l:.0f}{l2l}{v3l:.0f} r={rl})->({v1u:.0f}{v2u:.0f}{l2u}{v3u:.0f} r={ru})"
+                label = label.format(
+                    **dict(
+                        [
+                            (k, row[k])
+                            for k in add
+                            if k not in ["l2l", "l2u", "ru", "rl"]
+                        ]
+                        +
+                        # Try to get l number as UTF-8 superscript (works if in superscript_map)
+                        [
+                            (
+                                k,
+                                superscript_map.get(
+                                    str(int(row[k])), f"`{row[k]:.0f}`"
+                                ),
+                            )
+                            for k in add
+                            if k in ["l2l", "l2u"]
+                        ]  # ignore missing params (like rl, ru ? )
+                        + [
+                            ("iso", iso),
+                            ("molec", molecule),
+                            ("branch", _fix_branch_format[row["branch"]]),
+                            # 'ru', 'rl' may be missing if not all columns loaded
+                            ("ru", f"{row['ru']:.0f}" if "ru" in row else "?"),
+                            ("rl", f"{row['rl']:.0f}" if "rl" in row else "?"),
+                        ]
+                    )
                 )
-            )
-        else:
-            raise NotImplementedError(
-                "No label for {0}. Please add it!".format(molecule)
-            )
 
-        # Add details about some line properties
-        for k in details:
-            name, _, unit = details[k]
-            if is_float(row[k]):
-                label += "<br>{0} {1}: {2:.3g} {3}".format(k, name, row[k], unit)
             else:
-                label += "<br>{0} {1}: {2} {3}".format(k, name, row[k], unit)
+                raise NotImplementedError(
+                    "No customized label for {0}. Please add it!".format(molecule)
+                )
+
+            # Add details about some line properties
+            label += add_details(row, details)
+
+            label += f"<br>s.lines index: {row.name}"
+
+        except KeyError as err:
+            print(
+                f"Error during customized Line survey labelling. Printing everything : \n{str(err)}"
+            )
+
+            # Add everything we know
+            # raise
+            label = row.to_string().replace("\n", "<br>")
+            if "id" not in row:
+                label = "{molecule}<br>" + label
+            else:
+                label = get_molecule(row["id"]) + "<br>" + label
 
         return label
 
@@ -401,28 +493,32 @@ def LineSurvey(
             "jl",
         ]
 
-        if "isotope" in spec.conditions:
+        if "iso" in row:
+            iso = row["iso"]
+        elif "isotope" in spec.conditions:
             iso = spec.conditions["isotope"]
-            add.append("iso")
-            row["iso"] = iso
+        else:
+            iso = "?"
 
         label = "CO2 [{branch}{jl:.0f}](p{polyl:.0f}c{wangl:.0f}n{rankl:.0f})->(p{polyu:.0f}c{wangu:.0f}n{ranku:.0f})".format(
             **dict(
                 [(k, row[k]) for k in add]
-                + [("branch", _fix_branch_format[row["branch"]])]
+                + [("iso", iso), ("branch", _fix_branch_format[row["branch"]])]
             )
         )
 
-        for k in details:
-            name, _, unit = details[k]
-            if is_float(row[k]):
-                label += "<br>{0} {1}: {2:.3g} {3}".format(k, name, row[k], unit)
-            else:
-                label += "<br>{0} {1}: {2} {3}".format(name, k, row[k], unit)
+        label += add_details(row, details)
 
         return label
 
     def get_label_cdsd_hitran(row, details):
+        if "iso" in row:
+            iso = row["iso"]
+        elif "isotope" in spec.conditions:
+            iso = spec.conditions["isotope"]
+        else:
+            iso = "?"
+
         label = "CO2 [{branch}{jl:.0f}]({v1l:.0f}{v2l:.0f}`{l2l:.0f}`{v3l:.0f})->({v1u:.0f}{v2u:.0f}`{l2u:.0f}`{v3u:.0f})".format(
             **dict(
                 [
@@ -439,16 +535,13 @@ def LineSurvey(
                         "jl",
                     ]
                 ]
-                + [("branch", _fix_branch_format[row["branch"]])]
+                + [("iso", iso), ("branch", _fix_branch_format[row["branch"]])]
             )
         )
 
-        for k in details:
-            name, _, unit = details[k]
-            if is_float(row[k]):
-                label += "<br>{0} {1}: {2:.3g} {3}".format(k, name, row[k], unit)
-            else:
-                label += "<br>{0} {1}: {2} {3}".format(name, k, row[k], unit)
+        label += add_details(row, details)
+
+        label += f"<br>s.lines index: {row.name}"
 
         return label
 
@@ -472,17 +565,17 @@ def LineSurvey(
         return label
 
     def get_label_all(row):
-        """ print all lines details """
+        """print all lines details"""
         # label = row.__repr__()
-        label = "<br>".join(
-            [f"{k}: {v}" for k, v in row.items() if k not in ["wav", "shiftwav"]]
-        )
+        label = "<br>".join([f"{k}: {v}" for k, v in row.items()])
         return label
 
     def get_label_none(row):
         return "unknown databank format. \ndetails cant be read"
 
     # add extra info to label
+    if lineinfo == "all":
+        lineinfo = sp.columns
     details = {}
     if columndescriptor:
         for k in lineinfo:
@@ -494,12 +587,13 @@ def LineSurvey(
                 )
             try:  # to find units and real name (if exists in initial databank)
                 _, ktype, name, unit = columndescriptor[k]
-                details[k] = (name, ktype, " [{0}]".format(unit))
-            except:
+            except KeyError:
                 details[k] = ("", None, "")  # keep short name
+            else:
+                details[k] = (name, ktype, " [{0}]".format(unit))
 
     # Get label
-    if dbformat in ["hitran", "hitemp", "radisdb-hitemp"]:
+    if dbformat in ["hitran", "hitemp", "hitemp-radisdb", "radisdb-hitemp", "geisa"]:
         sp["label"] = sp.apply(lambda r: get_label_hitran(r, details, sp.attrs), axis=1)
     elif dbformat in ["cdsd-hitemp", "cdsd-4000"]:
         try:

@@ -25,12 +25,19 @@ def test_files_from_regex_1(*args, **kwargs):
     # This list will have to be updated if more .par files are added/removed in/from the folder
     # This list is what is the expected output from get_files_from_regex()
     path_actual = [
+        "geisa_CO_fragment.par",
+        "geisa_CO2_fragment.par",
+        "geisa_H2O_fragment.par",
+        "geisa_O2_fragment.par",
         "hitran_co2_626_bandhead_4165_4200nm.par",
         "hitran_2016_H2O_2iso_2000_2100cm.par",
         "hitran_CO_fragment.par",
         "hitran_co_3iso_2000_2300cm.par",
         "hitran_CO2_fragment.par",
     ]
+
+    assert len(path_test) == len(path_actual)
+
     path_actual.sort()
     path_test.sort()
 
@@ -58,6 +65,7 @@ def test_files_from_regex_2(*args, **kwargs):
     # This list will have to be updated if more files matching regular expression cdsd_* are added/removed in/from the folder
     # This list is what is the expected output from get_files_from_regex()
     path_actual = [
+        "geisa_CO2_fragment.par",
         "hitran_CO2_fragment.par",
         "hitran_co2_626_bandhead_4165_4200nm.par",
     ]
